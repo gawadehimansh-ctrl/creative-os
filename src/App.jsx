@@ -281,13 +281,10 @@ async function scrapeQuora(terms) {
     for (const term of terms.slice(0,2)) {
       try {
         const searchUrl = "https://www.quora.com/search?q="+encodeURIComponent(term);
-        const items = await runApifyActor("trudax/reddit-scraper-lite",{startUrls:[{url:searchUrl}],maxItems:LIMITS.quora,maxComments:5,searchPosts:true,searchComments:false,skipComments:false,sort:"relevance",includeNSFW:false});
-        results.push(...items.map(r=>[r.title,r.body].filter(Boolean).join(" — ")).filter(t=>t.length>10));
+        const items = await runApifyActor("apify/web-scraper",{startUrls:[{url:searchUrl}],maxCrawlingDepth:1,maxPagesPerCrawl:5});
+        results.push(...items.map(r=>r.text||r.content||"").filter(t=>t.length>20).slice(0,10));
       } catch(e) {
-        try {
-          const items = await runApifyActor("apify/web-scraper",{startUrls:[{url:"https://www.quora.com/search?q="+encodeURIComponent(term)}],maxCrawlingDepth:1,maxPagesPerCrawl:5});
-          results.push(...items.map(r=>r.text||r.content||"").filter(t=>t.length>20).slice(0,10));
-        } catch(e2) { console.error("Quora fallback failed:",e2); }
+        console.error("Quora scrape failed:",e);
       }
     }
     return results.slice(0,LIMITS.quora).join("\n---\n");
@@ -303,7 +300,7 @@ async function scrapeMetaAdsLibrary(brandName, competitorNames) {
 
     for (const term of searchTerms) {
       try {
-        const items = await runApifyActor("apify/facebook-ads-scraper", {
+        const items = await runApifyActor("curious_coder/facebook-ads-library-scraper", {
           searchTerms: [term],
           adType: "all",
           adsCount: 30,
@@ -982,7 +979,7 @@ function Step2Screen({urlData, onGenerate, onBack}) {
   const [screenshots,   setScreenshots]   = useState([]);
   const hasSaved = !!getSavedBrand(urlData.brandName);
 
-  useState(() => {
+  useEffect(() => {
     if (saved.usps?.filter(u=>u.trim()).length > 0) return;
     setUspLoading(true);
     claudeCall(
@@ -1894,7 +1891,7 @@ function WindsorPanel({data}) {
 
 // ─── BRIEF OUTPUT ─────────────────────────────────────────────
 
-function BriefOutput({data, researchData, windsorAngles, onReset}) {
+function BriefOutput({data, researchData, windsorAngles, metaAdsInsights, onReset}) {
   const [activeTab, setActiveTab] = useState("research");
   const icps = data?.icps || [];
 
@@ -1907,6 +1904,8 @@ function BriefOutput({data, researchData, windsorAngles, onReset}) {
       global_ad_insights: data.global_ad_insights,
       icps: data.icps,
       research: researchData,
+      windsor_performance: windsorAngles || null,
+      meta_ads_insights: metaAdsInsights || null,
       exported_at: new Date().toISOString(),
     };
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
@@ -2016,6 +2015,7 @@ export default function App() {
   const [researchData, setResearchData] = useState(null);
   const [windsorAngles,setWindsorAngles]= useState(null);
   const [windsorLoaded,setWindsorLoaded]= useState(false);
+  const [metaAdsData,  setMetaAdsData]  = useState(null);
   const [progress,     setProgress]     = useState(defaultProgress);
   const [liveSignals,  setLiveSignals]  = useState([]);
   const [dataPoints,   setDataPoints]   = useState({});
@@ -2070,6 +2070,7 @@ export default function App() {
         const metaAdsRaw = await scrapeMetaAdsLibrary(brandNameForMeta, competitorNames);
         if (metaAdsRaw?.length > 0) {
           metaAdsInsights = parseMetaAdsInsights(metaAdsRaw);
+          setMetaAdsData(metaAdsInsights);
           mark("meta_ads","done");
         } else { mark("meta_ads","failed"); }
       } catch(e) { console.error("Meta Ads step failed:",e); mark("meta_ads","failed"); }
@@ -2168,7 +2169,7 @@ export default function App() {
       {screen==="step1"  &&<Step1Screen onNext={data=>{setUrlData(data);setScreen("step2");}}/>}
       {screen==="step2"  &&<Step2Screen urlData={urlData} onGenerate={handleGenerate} onBack={()=>setScreen("step1")}/>}
       {screen==="loading"&&<LoadingScreen brand={urlData?.brandName} progress={progress} liveSignals={liveSignals} dataPoints={dataPoints} windsorLoaded={windsorLoaded}/>}
-      {screen==="output" &&<BriefOutput data={briefData} researchData={researchData} onReset={()=>{setBriefData(null);setResearchData(null);setProgress(defaultProgress);setLiveSignals([]);setDataPoints({});setScreen("step1");}}/>}
+      {screen==="output" &&<BriefOutput data={briefData} researchData={researchData} windsorAngles={windsorAngles} metaAdsInsights={metaAdsData} onReset={()=>{setBriefData(null);setResearchData(null);setProgress(defaultProgress);setLiveSignals([]);setDataPoints({});setScreen("step1");}}/>}
     </div>
   );
 }
