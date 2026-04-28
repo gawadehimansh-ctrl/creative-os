@@ -106,26 +106,26 @@ async function fetchWindsorData() {
 
 function parseCreativeAngles(rows) {
   if (!rows?.length) return null;
-  const withRoas = rows.filter(r => r.purchase_roas_omni_purchase > 0 && r.spend > 500);
-  const sorted = [...withRoas].sort((a,b) => (b.purchase_roas_omni_purchase||0) - (a.purchase_roas_omni_purchase||0));
+  const getRoas = r => r.purchase_roas || r.omni_purchase_roas || r.purchase_roas_omni_purchase || 0;
+  const withRoas = rows.filter(r => getRoas(r) > 0 && (r.spend||0) > 500);
+  const sorted = [...withRoas].sort((a,b) => getRoas(b) - getRoas(a));
   const topPerformers = sorted.slice(0,5).map(r => {
     const parts = (r.ad_name||"").split("-").pop() || r.ad_name;
     return {
       ad_name: r.ad_name||"",
       creative_name: parts,
-      spend: Math.round(r.spend),
-      roas: Number((r.purchase_roas_omni_purchase||0).toFixed(2)),
+      spend: Math.round(r.spend||0),
+      roas: Number(getRoas(r).toFixed(2)),
       ctr: Number(((r.ctr||0)*100).toFixed(2)),
-      purchases: Math.round(r.actions_omni_purchase||0),
       format: (r.ad_name||"").toLowerCase().includes("video")?"Video":(r.ad_name||"").toLowerCase().includes("static")?"Static":"Catalog",
       is_influencer: (r.ad_name||"").toLowerCase().includes("inf"),
       is_ugc: (r.ad_name||"").toLowerCase().includes("ccp"),
     };
   });
-  const fatigued = withRoas.filter(r=>r.spend>5000&&(r.purchase_roas_omni_purchase||0)<1.5).sort((a,b)=>b.spend-a.spend).slice(0,5).map(r=>({
-    ad_name:r.ad_name||"",creative_name:(r.ad_name||"").split("-").pop()||r.ad_name,spend:Math.round(r.spend),roas:Number((r.purchase_roas_omni_purchase||0).toFixed(2))
+  const fatigued = withRoas.filter(r=>r.spend>5000&&getRoas(r)<1.5).sort((a,b)=>b.spend-a.spend).slice(0,5).map(r=>({
+    ad_name:r.ad_name||"",creative_name:(r.ad_name||"").split("-").pop()||r.ad_name,spend:Math.round(r.spend||0),roas:Number(getRoas(r).toFixed(2))
   }));
-  const avgRoas = arr => arr.length?(arr.reduce((s,r)=>s+(r.purchase_roas_omni_purchase||0),0)/arr.length).toFixed(2):0;
+  const avgRoas = arr => arr.length?(arr.reduce((s,r)=>s+getRoas(r),0)/arr.length).toFixed(2):0;
   const vid = withRoas.filter(r=>(r.ad_name||"").toLowerCase().includes("video"));
   const sta = withRoas.filter(r=>(r.ad_name||"").toLowerCase().includes("static"));
   const inf = withRoas.filter(r=>(r.ad_name||"").toLowerCase().includes("inf"));
@@ -133,7 +133,7 @@ function parseCreativeAngles(rows) {
     top_performers:topPerformers, fatigued_angles:fatigued,
     total_ads_analysed:withRoas.length, total_spend_analysed:Math.round(withRoas.reduce((s,r)=>s+(r.spend||0),0)),
     format_performance:{video:{count:vid.length,avg_roas:avgRoas(vid)},static:{count:sta.length,avg_roas:avgRoas(sta)},influencer:{count:inf.length,avg_roas:avgRoas(inf)}},
-    best_roas:sorted[0]?.purchase_roas_omni_purchase?.toFixed(2)||0, best_creative:sorted[0]?.ad_name||"",
+    best_roas:Number(getRoas(sorted[0]||{}).toFixed(2))||0, best_creative:sorted[0]?.ad_name||"",
   };
 }
 
