@@ -75,7 +75,7 @@ app.post("/api/windsor", async (req, res) => {
     return res.status(400).json({ error: "Windsor not configured" });
   }
   try {
-    const url = "https://connectors.windsor.ai/all?api_key=" + apiKey + "&date_preset=last_30d&fields=account_name,ad_name,spend,clicks,impressions,ctr,purchase_roas,purchases_conversion_value,omni_purchase_roas&data_source=facebook";
+    const url = "https://connectors.windsor.ai/all?api_key=" + apiKey + "&date_preset=last_30d&fields=account_name,ad_name,spend,clicks,impressions,ctr,purchase_roas,purchases_conversion_value,omni_purchase_roas,website_purchase_roas,roas&data_source=facebook";
     console.log("[Windsor] Fetching:", url.replace(apiKey, "***"));
     const response = await fetch(url, { method: "GET" });
     console.log("[Windsor] HTTP status:", response.status);

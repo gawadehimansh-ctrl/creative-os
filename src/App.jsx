@@ -106,8 +106,14 @@ async function fetchWindsorData() {
 
 function parseCreativeAngles(rows) {
   if (!rows?.length) return null;
-  const getRoas = r => r.purchase_roas || r.omni_purchase_roas || r.purchase_roas_omni_purchase || 0;
-  const withRoas = rows.filter(r => getRoas(r) > 0);
+  const getRoas = r => {
+    const direct = r.purchase_roas || r.omni_purchase_roas || r.purchase_roas_omni_purchase || r.website_purchase_roas || r.roas || 0;
+    if (direct > 0) return direct;
+    // Compute from conversion value / spend when ROAS fields are null
+    if (r.purchases_conversion_value > 0 && r.spend > 0) return r.purchases_conversion_value / r.spend;
+    return 0;
+  };
+  const withRoas = rows.filter(r => getRoas(r) > 0 && (r.spend || 0) > 0);
   const sorted = [...withRoas].sort((a,b) => getRoas(b) - getRoas(a));
   const topPerformers = sorted.slice(0,5).map(r => {
     const parts = (r.ad_name||"").split("-").pop() || r.ad_name;
@@ -116,7 +122,7 @@ function parseCreativeAngles(rows) {
       creative_name: parts,
       spend: Math.round(r.spend||0),
       roas: Number(getRoas(r).toFixed(2)),
-      ctr: Number(((r.ctr||0)*100).toFixed(2)),
+      ctr: Number((r.ctr||0).toFixed(2)),
       format: (r.ad_name||"").toLowerCase().includes("video")?"Video":(r.ad_name||"").toLowerCase().includes("static")?"Static":"Catalog",
       is_influencer: (r.ad_name||"").toLowerCase().includes("inf"),
       is_ugc: (r.ad_name||"").toLowerCase().includes("ccp"),
