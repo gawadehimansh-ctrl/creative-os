@@ -10,23 +10,30 @@ app.use(express.json({ limit: "10mb" }));
 // Serve frontend
 app.use(express.static(join(__dirname, "dist")));
 
-// Claude proxy
+// Claude proxy — retries on 429 with exponential backoff
 app.post("/api/claude", async (req, res) => {
-  try {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": process.env.VITE_ANTHROPIC_KEY,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify(req.body),
-    });
-    const data = await response.json();
-    res.json(data);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  const apiKey = process.env.ANTHROPIC_API_KEY || process.env.VITE_ANTHROPIC_KEY;
+  const backoffs = [2000, 5000, 12000];
+  let lastErr;
+  for (let attempt = 0; attempt <= 3; attempt++) {
+    try {
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+        body: JSON.stringify(req.body),
+      });
+      if (response.status === 429 && attempt < 3) {
+        const retryAfter = parseInt(response.headers.get("retry-after") || "0") * 1000;
+        await new Promise(r => setTimeout(r, retryAfter || backoffs[attempt]));
+        continue;
+      }
+      return res.json(await response.json());
+    } catch (err) {
+      lastErr = err;
+      if (attempt < 3) await new Promise(r => setTimeout(r, backoffs[attempt]));
+    }
   }
+  res.status(500).json({ error: lastErr?.message || "Claude API failed after retries" });
 });
 
 // Apify proxy — injects token server-side so it never reaches the browser

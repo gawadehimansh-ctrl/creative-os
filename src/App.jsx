@@ -38,6 +38,11 @@ function loadBrands() { try { return JSON.parse(localStorage.getItem(LS_KEY)) ||
 function saveBrand(name, ctx) { const all = loadBrands(); all[name] = {...ctx, updatedAt:Date.now()}; localStorage.setItem(LS_KEY, JSON.stringify(all)); }
 function getSavedBrand(name) { return loadBrands()[name] || null; }
 
+const BRIEF_CACHE_KEY = "briefengine_v6_last_brief";
+function saveLastBrief(payload) { try { localStorage.setItem(BRIEF_CACHE_KEY, JSON.stringify(payload)); } catch {} }
+function loadLastBrief() { try { return JSON.parse(localStorage.getItem(BRIEF_CACHE_KEY)); } catch { return null; } }
+function clearLastBrief() { try { localStorage.removeItem(BRIEF_CACHE_KEY); } catch {} }
+
 function validateUrls(data) {
   const errors = [];
   if (data.amazonUrls.filter(u=>u.trim()).length < 3) errors.push("Amazon URLs — add at least 3 (your brand + competitors)");
@@ -1225,6 +1230,11 @@ function Step2Screen({urlData, onGenerate, onBack}) {
   const [winningAdUrls, setWinningAdUrls] = useState(saved.winningAdUrls || [""]);
   const [screenshots,   setScreenshots]   = useState([]);
   const hasSaved = !!getSavedBrand(urlData.brandName);
+
+  useEffect(() => {
+    if (!urlData.brandName) return;
+    saveBrand(urlData.brandName, {usps, toneOfVoice, adSpend, targetRoas, winningCopies, testedAngles, killedCreatives, currentOffers, winningAdUrls});
+  }, [usps, toneOfVoice, adSpend, targetRoas, winningCopies, testedAngles, killedCreatives, currentOffers, winningAdUrls]);
 
   useEffect(() => {
     if (saved.usps?.filter(u=>u.trim()).length > 0) return;
@@ -2533,6 +2543,17 @@ export default function App() {
   const [progress,     setProgress]     = useState(defaultProgress);
   const [liveSignals,  setLiveSignals]  = useState([]);
   const [dataPoints,   setDataPoints]   = useState({});
+  const [cachedBrief,  setCachedBrief]  = useState(() => loadLastBrief());
+
+  const restoreLastBrief = () => {
+    const c = cachedBrief;
+    setBriefData(c.brief);
+    setResearchData(c.researchIntelligence);
+    setWindsorAngles(c.windsorAngles);
+    setMetaAdsData(c.metaAdsInsights);
+    setCreativeIntel(c.creativeIntelData);
+    setScreen("output");
+  };
 
   const mark = (key,state) => setProgress(p=>({...p,[key]:state}));
 
@@ -2729,6 +2750,7 @@ export default function App() {
 
       if(!brief) throw new Error("Brief generation returned null");
       setBriefData(brief);
+      saveLastBrief({ brief, researchIntelligence, windsorAngles: parsedWindsor, metaAdsInsights, creativeIntelData });
       setScreen("output");
 
     } catch(err) {
@@ -2741,10 +2763,17 @@ export default function App() {
   return (
     <div style={{minHeight:"100vh",background:T.bg,fontFamily:"'DM Sans',sans-serif"}}>
       <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;1,400&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+      {screen==="step1"&&cachedBrief?.brief&&(
+        <div style={{position:"fixed",bottom:"24px",left:"50%",transform:"translateX(-50%)",zIndex:100,background:"rgba(20,20,18,0.96)",border:"1px solid rgba(200,75,47,0.4)",borderRadius:"8px",padding:"12px 20px",display:"flex",alignItems:"center",gap:"16px",boxShadow:"0 8px 32px rgba(0,0,0,0.6)"}}>
+          <span style={{fontFamily:"'DM Mono',monospace",fontSize:"11px",color:T.muted}}>Last brief: <span style={{color:T.ink}}>{cachedBrief.brief?.brand}</span></span>
+          <button onClick={restoreLastBrief} style={{fontFamily:"'DM Mono',monospace",fontSize:"11px",padding:"5px 14px",borderRadius:"4px",cursor:"pointer",background:"rgba(200,75,47,0.15)",color:T.accent,border:"1px solid rgba(200,75,47,0.4)"}}>Restore →</button>
+          <button onClick={()=>{clearLastBrief();setCachedBrief(null);}} style={{background:"none",border:"none",color:T.muted,cursor:"pointer",fontSize:"14px",lineHeight:1,padding:"2px"}}>✕</button>
+        </div>
+      )}
       {screen==="step1"  &&<Step1Screen onNext={data=>{setUrlData(data);setScreen("step2");}}/>}
       {screen==="step2"  &&<Step2Screen urlData={urlData} onGenerate={handleGenerate} onBack={()=>setScreen("step1")}/>}
       {screen==="loading"&&<LoadingScreen brand={urlData?.brandName} progress={progress} liveSignals={liveSignals} dataPoints={dataPoints} windsorLoaded={windsorLoaded}/>}
-      {screen==="output" &&<BriefOutput data={briefData} researchData={researchData} windsorAngles={windsorAngles} metaAdsInsights={metaAdsData} creativeIntel={creativeIntel} onReset={()=>{setBriefData(null);setResearchData(null);setCreativeIntel(null);setProgress(defaultProgress);setLiveSignals([]);setDataPoints({});setScreen("step1");}}/>}
+      {screen==="output" &&<BriefOutput data={briefData} researchData={researchData} windsorAngles={windsorAngles} metaAdsInsights={metaAdsData} creativeIntel={creativeIntel} onReset={()=>{setBriefData(null);setResearchData(null);setCreativeIntel(null);setProgress(defaultProgress);setLiveSignals([]);setDataPoints({});setScreen("step1");clearLastBrief();setCachedBrief(null);}}/>}
     </div>
   );
 }
