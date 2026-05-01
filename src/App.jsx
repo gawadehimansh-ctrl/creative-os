@@ -1066,21 +1066,32 @@ function TopBar({left,center,right}) {
 
 // ─── STEP 1 ──────────────────────────────────────────────────
 
+const STEP1_DRAFT_KEY = "briefengine_v6_step1_draft";
+
 function Step1Screen({onNext}) {
-  const [brandName,    setBrandName]    = useState("");
-  const [brandUrl,     setBrandUrl]     = useState("");
-  const [productUrl,   setProductUrl]   = useState("");
-  const [mediaKeywords,setMediaKeywords]= useState("");
-  const [amazonUrls,   setAmazonUrls]   = useState(["","",""]);
-  const [myntraUrl,    setMyntraUrl]    = useState("");
-  const [youtubeUrls,  setYoutubeUrls]  = useState(["",""]);
-  const [instagramUrls,setInstagramUrls]= useState(["",""]);
-  const [otherUrls,    setOtherUrls]    = useState([""]);
-  const [winsorApiKey, setWindsorApiKey]= useState("");
-  const [competitorNames, setCompetitorNames]= useState("");
+  const draft = (() => { try { return JSON.parse(localStorage.getItem(STEP1_DRAFT_KEY)) || {}; } catch { return {}; } })();
+  const [brandName,    setBrandName]    = useState(draft.brandName    || "");
+  const [brandUrl,     setBrandUrl]     = useState(draft.brandUrl     || "");
+  const [productUrl,   setProductUrl]   = useState(draft.productUrl   || "");
+  const [mediaKeywords,setMediaKeywords]= useState(draft.mediaKeywords|| "");
+  const [amazonUrls,   setAmazonUrls]   = useState(draft.amazonUrls   || ["","",""]);
+  const [myntraUrl,    setMyntraUrl]    = useState(draft.myntraUrl    || "");
+  const [youtubeUrls,  setYoutubeUrls]  = useState(draft.youtubeUrls  || ["",""]);
+  const [instagramUrls,setInstagramUrls]= useState(draft.instagramUrls|| ["",""]);
+  const [otherUrls,    setOtherUrls]    = useState(draft.otherUrls    || [""]);
+  const [winsorApiKey, setWindsorApiKey]= useState(draft.winsorApiKey || "");
+  const [competitorNames, setCompetitorNames]= useState(draft.competitorNames || "");
   const [creativeSheetRows, setCreativeSheetRows] = useState([]);
   const [sheetLoaded, setSheetLoaded] = useState(false);
   const [errors,       setErrors]       = useState([]);
+
+  useEffect(() => {
+    localStorage.setItem(STEP1_DRAFT_KEY, JSON.stringify({
+      brandName, brandUrl, productUrl, mediaKeywords,
+      amazonUrls, myntraUrl, youtubeUrls, instagramUrls, otherUrls,
+      winsorApiKey, competitorNames,
+    }));
+  }, [brandName, brandUrl, productUrl, mediaKeywords, amazonUrls, myntraUrl, youtubeUrls, instagramUrls, otherUrls, winsorApiKey, competitorNames]);
 
   const baseReady = brandName.trim()&&brandUrl.trim()&&productUrl.trim();
 
@@ -2320,6 +2331,102 @@ function BriefOutput({data, researchData, windsorAngles, metaAdsInsights, creati
     URL.revokeObjectURL(url);
   }
 
+  function buildMarkdown() {
+    const lines = [];
+    const slug = s => s || "—";
+    const list = arr => (arr||[]).map(s=>`- ${s}`).join("\n") || "—";
+
+    lines.push(`# Creative Brief — ${slug(data.brand)} / ${slug(data.product)}`);
+    lines.push(`_Generated: ${new Date().toLocaleString()}_\n`);
+    lines.push(`## Core Problem\n${slug(data.core_problem)}\n`);
+    lines.push(`## Competitor Gap\n${slug(data.competitor_gap)}\n`);
+
+    if (data.global_ad_insights) {
+      const g = data.global_ad_insights;
+      lines.push(`## Global Ad Intelligence`);
+      if ((g.angles_to_test||[]).length) lines.push(`**Angles to Test**\n${list(g.angles_to_test)}`);
+      if ((g.angles_to_avoid||[]).length) lines.push(`**Angles to Avoid**\n${list(g.angles_to_avoid)}`);
+      lines.push("");
+    }
+
+    (data.icps||[]).forEach((icp, idx) => {
+      const p = icp.profile||{}, pr = icp.problem||{}, cr = icp.creative||{};
+      lines.push(`---\n# ICP ${idx+1} — ${slug(p.name)} [${icp.type||""}]`);
+      lines.push(`${slug(p.age_range)} · ${slug(p.city_tier)} · ${slug(p.income_bracket)}`);
+      lines.push(`**Purchase Trigger:** ${slug(p.purchase_trigger)}`);
+      lines.push(`**Purchase Blocker:** ${slug(p.purchase_blocker)}\n`);
+
+      lines.push(`## Core Problem (Consumer Language)`);
+      lines.push(`> "${slug(pr.core_problem)}"\n`);
+      lines.push(slug(pr.problem_depth));
+      lines.push(`**Emotion Before:** ${slug(pr.emotion_before_purchase)}  **Emotion After:** ${slug(pr.emotion_after_purchase)}`);
+      if ((pr.real_quotes||[]).length) lines.push(`\n**Real Quotes**\n${(pr.real_quotes).map(q=>`> "${q}"`).join("\n")}`);
+      lines.push("");
+
+      if ((icp.usp_bridge||[]).length) {
+        lines.push(`## Problem → USP Bridge`);
+        icp.usp_bridge.forEach(b => {
+          lines.push(`**Problem:** ${slug(b.consumer_problem)}  →  **USP:** ${slug(b.product_usp)}`);
+          lines.push(`_Proof:_ ${slug(b.proof_point)}  |  _Angle:_ ${slug(b.creative_angle)}\n`);
+        });
+      }
+
+      if ((icp.objection_map||[]).length) {
+        lines.push(`## Objection Map`);
+        icp.objection_map.forEach(o => lines.push(`- **${slug(o.objection)}** → ${slug(o.counter)} — _"${slug(o.ad_line)}"_`));
+        lines.push("");
+      }
+
+      if ((icp.concepts||[]).length) {
+        lines.push(`## Concept Recommendations`);
+        icp.concepts.forEach(c => lines.push(`- **${slug(c.concept)}** [${slug(c.format)}] — ${slug(c.rationale)}`));
+        lines.push("");
+      }
+
+      if ((cr.hooks||[]).length) {
+        lines.push(`## Hooks`);
+        cr.hooks.forEach((h,i) => {
+          lines.push(`**H${i+1} [${slug(h.type)}]:** "${slug(h.hook)}"`);
+          lines.push(`  _${slug(h.why_it_works)}_\n`);
+        });
+      }
+
+      if (cr.static_ad) {
+        lines.push(`## Static Ad Copy`);
+        lines.push(`**Headline:** ${slug(cr.static_ad.headline)}`);
+        lines.push(`**Body:** ${slug(cr.static_ad.body_copy)}`);
+        lines.push(`**USP Line:** ${slug(cr.static_ad.usp_line)}`);
+        lines.push(`**CTA:** ${slug(cr.static_ad.cta)}\n`);
+      }
+
+      if ((cr.body_copy_variations||[]).length) {
+        lines.push(`## Body Copy Variations`);
+        cr.body_copy_variations.forEach(v => {
+          lines.push(`**${slug(v.angle)}**\n${slug(v.copy)}\n`);
+        });
+      }
+
+      if (icp.proven_formula) {
+        const f = icp.proven_formula;
+        lines.push(`## Proven Formula (Windsor AI)`);
+        lines.push(`**Winning Angle:** ${slug(f.winning_angle)}  |  **ROAS:** ${slug(f.roas)}  |  **Format:** ${slug(f.format)}`);
+        lines.push(`**Why it works:** ${slug(f.why_it_works)}`);
+        lines.push(`**Do:** ${slug(f.do_this)}`);
+        lines.push(`**Don't:** ${slug(f.dont_do_this)}\n`);
+      }
+    });
+
+    return lines.join("\n");
+  }
+
+  const [copied, setCopied] = useState(false);
+  function copyMarkdown() {
+    navigator.clipboard.writeText(buildMarkdown()).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+
   const OUTPUT_TABS = [
     {key:"research",        label:"Research Intelligence"},
     {key:"windsor",         label:"Ad Performance"},
@@ -2333,6 +2440,7 @@ function BriefOutput({data, researchData, windsorAngles, metaAdsInsights, creati
         left={<button onClick={onReset} style={{background:"none",border:"1px solid "+T.rule,color:T.muted,padding:"8px 16px",borderRadius:"4px",cursor:"pointer",fontFamily:"'DM Mono',monospace",fontSize:"11px"}}>← New Brief</button>}
         center={<div style={{fontFamily:"'DM Mono',monospace",fontSize:"11px",color:T.muted}}>{data.brand} · {data.product}</div>}
         right={<div style={{display:"flex",alignItems:"center",gap:"10px"}}>
+          <button onClick={copyMarkdown} style={{fontFamily:"'DM Mono',monospace",fontSize:"11px",padding:"6px 16px",borderRadius:"4px",cursor:"pointer",background:"rgba(100,160,255,0.1)",color:T.blue,border:"1px solid rgba(100,160,255,0.3)",letterSpacing:"0.05em"}}>{copied ? "✓ Copied" : "⎘ Copy MD"}</button>
           <button onClick={exportJSON} style={{fontFamily:"'DM Mono',monospace",fontSize:"11px",padding:"6px 16px",borderRadius:"4px",cursor:"pointer",background:"rgba(200,75,47,0.15)",color:"#c84b2f",border:"1px solid rgba(200,75,47,0.4)",letterSpacing:"0.05em"}}>↓ Export JSON</button>
           <span style={{fontFamily:"'DM Mono',monospace",fontSize:"10px",padding:"4px 12px",borderRadius:"2px",background:"rgba(50,200,80,0.1)",color:"rgba(80,220,100,0.7)",border:"1px solid rgba(50,200,80,0.2)"}}>READY FOR DESIGN</span>
         </div>}
