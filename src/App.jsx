@@ -2467,75 +2467,120 @@ export default function App() {
         mark("windsor","done");
       } else { mark("windsor","failed"); }
 
-      // Creative sheet × Windsor join → Vision AI tagging
-      mark("creative_intel","running");
-      let creativeIntelData = null;
-      if (allInputs.creativeSheetRows?.length > 0 && windsorRaw?.length > 0) {
-        try {
-          const joined = joinSheetWithWindsor(allInputs.creativeSheetRows, windsorRaw);
-          if (joined.length > 0) {
-            const analysed = await analyzeCreativesWithVision(joined);
-            creativeIntelData = computeVisualCorrelations(analysed, joined);
-            setCreativeIntel(creativeIntelData);
-            mark("creative_intel","done");
-          } else { mark("creative_intel","failed"); }
-        } catch(e) { console.error("Creative intel error:",e); mark("creative_intel","failed"); }
-      } else { mark("creative_intel", allInputs.creativeSheetRows?.length > 0 ? "failed" : "pending"); }
+      // All independent steps run in parallel — creative_intel, meta_ads, and all 8 scrapers
+      const _parallel = await Promise.allSettled([
+        // creative_intel
+        (async () => {
+          mark("creative_intel","running");
+          if (allInputs.creativeSheetRows?.length > 0 && windsorRaw?.length > 0) {
+            try {
+              const joined = joinSheetWithWindsor(allInputs.creativeSheetRows, windsorRaw);
+              if (joined.length > 0) {
+                const analysed = await analyzeCreativesWithVision(joined);
+                const data = computeVisualCorrelations(analysed, joined);
+                setCreativeIntel(data);
+                mark("creative_intel","done");
+                return data;
+              }
+              mark("creative_intel","failed"); return null;
+            } catch(e) { console.error("Creative intel error:",e); mark("creative_intel","failed"); return null; }
+          }
+          mark("creative_intel", allInputs.creativeSheetRows?.length > 0 ? "failed" : "pending");
+          return null;
+        })(),
+        // meta_ads
+        (async () => {
+          mark("meta_ads","running");
+          try {
+            const brandNameForMeta = urlIntelligence?.brand_name || allInputs.brandName || "";
+            const competitorNames = (allInputs.competitorNames||"").split(",").map(s=>s.trim()).filter(Boolean);
+            const raw = await scrapeMetaAdsLibrary(brandNameForMeta, competitorNames);
+            if (raw?.length > 0) {
+              const insights = parseMetaAdsInsights(raw);
+              setMetaAdsData(insights);
+              mark("meta_ads","done");
+              return insights;
+            }
+            mark("meta_ads","failed"); return null;
+          } catch(e) { console.error("Meta Ads step failed:",e); mark("meta_ads","failed"); return null; }
+        })(),
+        // amazon
+        (async () => {
+          mark("amazon","running");
+          const data = await scrapeAmazon(allInputs.amazonUrls||[]);
+          mark("amazon", data?"done":"failed");
+          if(data) addSignals(data,"amazon");
+          return data;
+        })(),
+        // flipkart
+        (async () => {
+          mark("flipkart","running");
+          const data = await scrapeFlipkart(flipkartTerms);
+          mark("flipkart", data?"done":"failed");
+          if(data) addSignals(data,"flipkart");
+          return data;
+        })(),
+        // myntra
+        (async () => {
+          mark("myntra","running");
+          const data = await scrapeMyntra(allInputs.myntraUrl);
+          mark("myntra", data?"done":"failed");
+          if(data) addSignals(data,"myntra");
+          return data;
+        })(),
+        // reddit
+        (async () => {
+          mark("reddit","running");
+          const data = await scrapeReddit(redditTerms,redditSubs);
+          mark("reddit", data?"done":"failed");
+          if(data) addSignals(data,"reddit");
+          return data;
+        })(),
+        // youtube
+        (async () => {
+          mark("youtube","running");
+          const data = await scrapeYouTube(allInputs.youtubeUrls||[]);
+          mark("youtube", data?"done":"failed");
+          if(data) addSignals(data,"youtube");
+          return data;
+        })(),
+        // tiktok
+        (async () => {
+          mark("tiktok","running");
+          const data = await scrapeTikTok(tiktokTags);
+          mark("tiktok", data?"done":"failed");
+          if(data) addSignals(data,"tiktok");
+          return data;
+        })(),
+        // instagram
+        (async () => {
+          mark("instagram","running");
+          const data = await scrapeInstagram(allInputs.instagramUrls||[],igTags);
+          mark("instagram", data?"done":"failed");
+          if(data) addSignals(data,"instagram");
+          return data;
+        })(),
+        // quora
+        (async () => {
+          mark("quora","running");
+          const data = await scrapeQuora(quoraTerms);
+          mark("quora", data?"done":"failed");
+          if(data) addSignals(data,"quora");
+          return data;
+        })(),
+      ]);
 
-      // Meta Ads Library step
-      mark("meta_ads","running");
-      let metaAdsInsights = null;
-      try {
-        const brandNameForMeta = urlIntelligence?.brand_name || allInputs.brandName || "";
-        const competitorNames = (allInputs.competitorNames||"").split(",").map(s=>s.trim()).filter(Boolean);
-        const metaAdsRaw = await scrapeMetaAdsLibrary(brandNameForMeta, competitorNames);
-        if (metaAdsRaw?.length > 0) {
-          metaAdsInsights = parseMetaAdsInsights(metaAdsRaw);
-          setMetaAdsData(metaAdsInsights);
-          mark("meta_ads","done");
-        } else { mark("meta_ads","failed"); }
-      } catch(e) { console.error("Meta Ads step failed:",e); mark("meta_ads","failed"); }
-
-      mark("amazon","running");
-      const amazonData = await scrapeAmazon(allInputs.amazonUrls||[]);
-      mark("amazon",amazonData?"done":"failed");
-      if(amazonData) addSignals(amazonData,"amazon");
-
-
-      mark("flipkart","running");
-      const flipkartData = await scrapeFlipkart(flipkartTerms);
-      mark("flipkart",flipkartData?"done":"failed");
-      if(flipkartData) addSignals(flipkartData,"flipkart");
-
-      mark("myntra","running");
-      const myntraData = await scrapeMyntra(allInputs.myntraUrl);
-      mark("myntra",myntraData?"done":"failed");
-      if(myntraData) addSignals(myntraData,"myntra");
-
-      mark("reddit","running");
-      const redditData = await scrapeReddit(redditTerms,redditSubs);
-      mark("reddit",redditData?"done":"failed");
-      if(redditData) addSignals(redditData,"reddit");
-
-      mark("youtube","running");
-      const youtubeData = await scrapeYouTube(allInputs.youtubeUrls||[]);
-      mark("youtube",youtubeData?"done":"failed");
-      if(youtubeData) addSignals(youtubeData,"youtube");
-
-      mark("tiktok","running");
-      const tiktokData = await scrapeTikTok(tiktokTags);
-      mark("tiktok",tiktokData?"done":"failed");
-      if(tiktokData) addSignals(tiktokData,"tiktok");
-
-      mark("instagram","running");
-      const instagramData = await scrapeInstagram(allInputs.instagramUrls||[],igTags);
-      mark("instagram",instagramData?"done":"failed");
-      if(instagramData) addSignals(instagramData,"instagram");
-
-      mark("quora","running");
-      const quoraData = await scrapeQuora(quoraTerms);
-      mark("quora",quoraData?"done":"failed");
-      if(quoraData) addSignals(quoraData,"quora");
+      const [_ci, _ma, _amz, _fl, _mn, _rd, _yt, _tt, _ig, _qr] = _parallel.map(r => r.status==="fulfilled" ? r.value : null);
+      const creativeIntelData = _ci;
+      const metaAdsInsights   = _ma;
+      const amazonData        = _amz;
+      const flipkartData      = _fl;
+      const myntraData        = _mn;
+      const redditData        = _rd;
+      const youtubeData       = _yt;
+      const tiktokData        = _tt;
+      const instagramData     = _ig;
+      const quoraData         = _qr;
 
       mark("video_analysis","running");
       const videoAnalysis = [];
