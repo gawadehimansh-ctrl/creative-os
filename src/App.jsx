@@ -7,7 +7,7 @@ const LIMITS = { amazon:30, flipkart:25, myntra:20, youtube:25, tiktok:20, insta
 const PIPELINE_STEPS = [
   { key:"read_urls",      label:"Reading brand & product URLs + extracting USPs" },
   { key:"extract",        label:"Extracting problem keywords" },
-  { key:"windsor",        label:"Fetching Meta ad performance data (Windsor AI)" },
+  { key:"windsor",        label:"Fetching Meta ad performance data (Blissclub → Windsor fallback)" },
   { key:"meta_ads",       label:"Scraping Meta Ads Library (competitor creatives)" },
   { key:"amazon",         label:"Scraping Amazon India (multi-brand reviews)" },
   { key:"flipkart",       label:"Scraping Flipkart (auto keyword search)" },
@@ -98,11 +98,31 @@ async function fetchWindsorData() {
       body: JSON.stringify({}),
     });
     const data = await res.json();
-    // Windsor returns array directly or nested under data
     if (Array.isArray(data)) return data;
     if (Array.isArray(data?.data)) return data.data;
     return null;
   } catch(e) { console.error("Windsor fetch failed:",e); return null; }
+}
+
+async function fetchBlissclubData() {
+  try {
+    const res = await fetch("/api/blissclub-data", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ datePreset: "last_30dT" }),
+    });
+    const data = await res.json();
+    if (data.error || !Array.isArray(data.rows) || !data.rows.length) return null;
+    // Normalise to Windsor-compatible field names so all downstream joins work unchanged
+    return data.rows.map(r => ({
+      ...r,
+      ad_name:        r.ad_name,
+      spend:          r.spend || 0,
+      purchase_value: r.action_values_purchase || 0,
+      purchases:      r.actions_purchase || 0,
+      purchase_roas:  r.spend > 0 && r.action_values_purchase > 0
+                        ? r.action_values_purchase / r.spend : 0,
+    }));
+  } catch(e) { console.error("Blissclub fetch failed:",e); return null; }
 }
 
 function parseCreativeName(name) {
@@ -1355,7 +1375,7 @@ function LoadingScreen({brand, progress, liveSignals, dataPoints, windsorLoaded}
           {windsorLoaded && (
             <div style={{background:"rgba(76,175,80,0.08)",border:"1px solid rgba(76,175,80,0.2)",borderRadius:"6px",padding:"8px 12px",display:"flex",alignItems:"center",gap:"8px"}}>
               <div style={{width:"6px",height:"6px",borderRadius:"50%",background:T.green,flexShrink:0}}/>
-              <span style={{fontFamily:"'DM Mono',monospace",fontSize:"10px",color:T.green}}>Windsor AI — Meta performance data loaded</span>
+              <span style={{fontFamily:"'DM Mono',monospace",fontSize:"10px",color:T.green}}>Meta performance data loaded</span>
             </div>
           )}
 
@@ -2662,16 +2682,25 @@ export default function App() {
       const quoraTerms    = urlIntelligence.quora_search_terms||[];
       mark("extract",(urlIntelligence.problem_keywords||[]).length>0?"done":"failed");
 
-      // Windsor AI step — always calls server (key stored in Railway env var)
+      // Performance data — Blissclub dashboard first, Windsor direct as fallback
       mark("windsor","running");
       let parsedWindsor = null;
-      const windsorRaw = await fetchWindsorData();
+      let windsorRaw = await fetchBlissclubData();
       if (windsorRaw?.length > 0) {
         parsedWindsor = parseCreativeAngles(windsorRaw);
         setWindsorAngles(parsedWindsor);
         setWindsorLoaded(true);
         mark("windsor","done");
-      } else { mark("windsor","failed"); }
+      } else {
+        // Fallback: Windsor direct (requires WINDSOR_API_KEY in Railway env)
+        windsorRaw = await fetchWindsorData();
+        if (windsorRaw?.length > 0) {
+          parsedWindsor = parseCreativeAngles(windsorRaw);
+          setWindsorAngles(parsedWindsor);
+          setWindsorLoaded(true);
+          mark("windsor","done");
+        } else { mark("windsor","failed"); }
+      }
 
       // All independent steps run in parallel — creative_intel, meta_ads, and all 8 scrapers
       const _parallel = await Promise.allSettled([
