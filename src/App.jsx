@@ -1,18 +1,13 @@
 import { useState, useEffect, useRef } from "react";
 
-const CONFIG = {
-  APIFY_TOKEN:    import.meta.env.VITE_APIFY_TOKEN,
-  ANTHROPIC_KEY:  import.meta.env.VITE_ANTHROPIC_KEY,
-  ASSEMBLYAI_KEY: import.meta.env.VITE_ASSEMBLYAI_KEY,
-  SHOTSTACK_KEY:  import.meta.env.VITE_SHOTSTACK_KEY,
-};
+const CONFIG = {};
 
 const LIMITS = { amazon:30, flipkart:25, myntra:20, youtube:25, tiktok:20, instagram:20, reddit:20, quora:15 };
 
 const PIPELINE_STEPS = [
   { key:"read_urls",      label:"Reading brand & product URLs + extracting USPs" },
   { key:"extract",        label:"Extracting problem keywords" },
-  { key:"windsor",        label:"Fetching Meta ad performance data (Windsor AI)" },
+  { key:"windsor",        label:"Fetching Meta ad performance data (Blissclub → Windsor fallback)" },
   { key:"meta_ads",       label:"Scraping Meta Ads Library (competitor creatives)" },
   { key:"amazon",         label:"Scraping Amazon India (multi-brand reviews)" },
   { key:"flipkart",       label:"Scraping Flipkart (auto keyword search)" },
@@ -23,7 +18,7 @@ const PIPELINE_STEPS = [
   { key:"instagram",      label:"Scraping Instagram comments" },
   { key:"quora",          label:"Scraping Quora discussions (auto)" },
   { key:"video_analysis",  label:"Analysing winning ad videos" },
-  { key:"creative_intel",  label:"Creative sheet × Windsor join — Vision AI tagging top 10" },
+  { key:"creative_intel",  label:"Creative sheet × Windsor join — Vision AI tagging top 3" },
   { key:"research",        label:"Building Research Intelligence — pain clusters & whitespace" },
   { key:"brief",           label:"Generating deep ICP briefs" },
 ];
@@ -42,6 +37,11 @@ const LS_KEY = "briefengine_v6_brands";
 function loadBrands() { try { return JSON.parse(localStorage.getItem(LS_KEY)) || {}; } catch { return {}; } }
 function saveBrand(name, ctx) { const all = loadBrands(); all[name] = {...ctx, updatedAt:Date.now()}; localStorage.setItem(LS_KEY, JSON.stringify(all)); }
 function getSavedBrand(name) { return loadBrands()[name] || null; }
+
+const BRIEF_CACHE_KEY = "briefengine_v6_last_brief";
+function saveLastBrief(payload) { try { localStorage.setItem(BRIEF_CACHE_KEY, JSON.stringify(payload)); } catch {} }
+function loadLastBrief() { try { return JSON.parse(localStorage.getItem(BRIEF_CACHE_KEY)); } catch { return null; } }
+function clearLastBrief() { try { localStorage.removeItem(BRIEF_CACHE_KEY); } catch {} }
 
 function validateUrls(data) {
   const errors = [];
@@ -98,11 +98,31 @@ async function fetchWindsorData() {
       body: JSON.stringify({}),
     });
     const data = await res.json();
-    // Windsor returns array directly or nested under data
     if (Array.isArray(data)) return data;
     if (Array.isArray(data?.data)) return data.data;
     return null;
   } catch(e) { console.error("Windsor fetch failed:",e); return null; }
+}
+
+async function fetchBlissclubData() {
+  try {
+    const res = await fetch("/api/blissclub-data", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ datePreset: "last_30dT" }),
+    });
+    const data = await res.json();
+    if (data.error || !Array.isArray(data.rows) || !data.rows.length) return null;
+    // Normalise to Windsor-compatible field names so all downstream joins work unchanged
+    return data.rows.map(r => ({
+      ...r,
+      ad_name:        r.ad_name,
+      spend:          r.spend || 0,
+      purchase_value: r.action_values_purchase || 0,
+      purchases:      r.actions_purchase || 0,
+      purchase_roas:  r.spend > 0 && r.action_values_purchase > 0
+                        ? r.action_values_purchase / r.spend : 0,
+    }));
+  } catch(e) { console.error("Blissclub fetch failed:",e); return null; }
 }
 
 function parseCreativeName(name) {
@@ -271,7 +291,7 @@ function joinSheetWithWindsor(sheetRows, windsorRows) {
 }
 
 async function analyzeCreativesWithVision(topRows) {
-  const candidates = topRows.slice(0, 10).filter(r => r.creativeLink);
+  const candidates = topRows.slice(0, 3).filter(r => r.creativeLink);
   if (!candidates.length) return [];
   try {
     const res = await fetch("/api/vision-analyze", {
@@ -364,18 +384,18 @@ async function apifyProxy(url, method="GET", body=null) {
 }
 
 async function runApifyActor(actorId, input) {
-  const startJson = await apifyProxy("https://api.apify.com/v2/acts/"+actorId+"/runs?token="+CONFIG.APIFY_TOKEN,"POST",input);
+  const startJson = await apifyProxy("https://api.apify.com/v2/acts/"+actorId+"/runs","POST",input);
   const runId = startJson?.data?.id;
   if (!runId) throw new Error("Actor start failed: "+actorId);
   let status="RUNNING", attempts=0;
   while(["RUNNING","READY","ABORTING"].includes(status) && attempts<60) {
     await new Promise(r=>setTimeout(r,4000));
-    const poll = await apifyProxy("https://api.apify.com/v2/actor-runs/"+runId+"?token="+CONFIG.APIFY_TOKEN);
+    const poll = await apifyProxy("https://api.apify.com/v2/actor-runs/"+runId);
     status=poll?.data?.status; attempts++;
   }
-  const runInfo = await apifyProxy("https://api.apify.com/v2/actor-runs/"+runId+"?token="+CONFIG.APIFY_TOKEN);
+  const runInfo = await apifyProxy("https://api.apify.com/v2/actor-runs/"+runId);
   const datasetId = runInfo?.data?.defaultDatasetId;
-  return await apifyProxy("https://api.apify.com/v2/datasets/"+datasetId+"/items?token="+CONFIG.APIFY_TOKEN+"&limit=150");
+  return await apifyProxy("https://api.apify.com/v2/datasets/"+datasetId+"/items?limit=150");
 }
 
 // ─── SCRAPERS ────────────────────────────────────────────────
@@ -658,14 +678,29 @@ function detectSentiment(text) {
 
 // ─── VIDEO ───────────────────────────────────────────────────
 
+async function assemblyaiProxy(path, method="GET", body=null) {
+  const res = await fetch("/api/assemblyai", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({path, method, body}),
+  });
+  return await res.json();
+}
+
+async function shotstackProxy(path, method="POST", body=null) {
+  const res = await fetch("/api/shotstack", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({path, method, body}),
+  });
+  return await res.json();
+}
+
 async function transcribeVideo(videoUrl) {
   try {
-    const submit = await fetch("https://api.assemblyai.com/v2/transcript",{method:"POST",headers:{"Authorization":CONFIG.ASSEMBLYAI_KEY,"Content-Type":"application/json"},body:JSON.stringify({audio_url:videoUrl,language_code:"en"})});
-    const {id} = await submit.json();
+    const {id} = await assemblyaiProxy("/v2/transcript","POST",{audio_url:videoUrl,language_code:"en"});
     let status="processing", transcript="", attempts=0;
     while(["processing","queued"].includes(status) && attempts<30) {
       await new Promise(r=>setTimeout(r,5000));
-      const poll = await (await fetch("https://api.assemblyai.com/v2/transcript/"+id,{headers:{"Authorization":CONFIG.ASSEMBLYAI_KEY}})).json();
+      const poll = await assemblyaiProxy("/v2/transcript/"+id);
       status=poll.status;
       if(status==="completed") transcript=poll.text;
       attempts++;
@@ -676,20 +711,20 @@ async function transcribeVideo(videoUrl) {
 
 async function extractFrames(videoUrl) {
   try {
-    const probeRes = await fetch("https://api.shotstack.io/v1/serve/probe",{method:"POST",headers:{"x-api-key":CONFIG.SHOTSTACK_KEY,"Content-Type":"application/json"},body:JSON.stringify({url:videoUrl})});
-    const duration = (await probeRes.json())?.response?.metadata?.duration || 20;
+    const probeData = await shotstackProxy("/v1/serve/probe","POST",{url:videoUrl});
+    const duration = probeData?.response?.metadata?.duration || 20;
     const timestamps = [];
     for(let t=0; t<Math.min(duration,30); t+=5) timestamps.push(t);
     const frameUrls = [];
     for(const time of timestamps.slice(0,6)) {
       try {
-        const renderRes = await fetch("https://api.shotstack.io/v1/render",{method:"POST",headers:{"x-api-key":CONFIG.SHOTSTACK_KEY,"Content-Type":"application/json"},body:JSON.stringify({timeline:{tracks:[{clips:[{asset:{type:"video",src:videoUrl,trim:time},start:0,length:0.1}]}]},output:{format:"jpg",fps:1,size:{width:1280,height:720}}})});
-        const renderId = (await renderRes.json())?.response?.id;
+        const renderData = await shotstackProxy("/v1/render","POST",{timeline:{tracks:[{clips:[{asset:{type:"video",src:videoUrl,trim:time},start:0,length:0.1}]}]},output:{format:"jpg",fps:1,size:{width:1280,height:720}}});
+        const renderId = renderData?.response?.id;
         if(!renderId) continue;
         let renderStatus="queued", renderAttempts=0;
         while(renderStatus!=="done" && renderAttempts<15) {
           await new Promise(r=>setTimeout(r,3000));
-          const checkData = await (await fetch("https://api.shotstack.io/v1/render/"+renderId,{headers:{"x-api-key":CONFIG.SHOTSTACK_KEY}})).json();
+          const checkData = await shotstackProxy("/v1/render/"+renderId,"GET");
           renderStatus=checkData?.response?.status;
           if(renderStatus==="done") frameUrls.push(checkData?.response?.url);
           renderAttempts++;
@@ -1056,21 +1091,32 @@ function TopBar({left,center,right}) {
 
 // ─── STEP 1 ──────────────────────────────────────────────────
 
+const STEP1_DRAFT_KEY = "briefengine_v6_step1_draft";
+
 function Step1Screen({onNext}) {
-  const [brandName,    setBrandName]    = useState("");
-  const [brandUrl,     setBrandUrl]     = useState("");
-  const [productUrl,   setProductUrl]   = useState("");
-  const [mediaKeywords,setMediaKeywords]= useState("");
-  const [amazonUrls,   setAmazonUrls]   = useState(["","",""]);
-  const [myntraUrl,    setMyntraUrl]    = useState("");
-  const [youtubeUrls,  setYoutubeUrls]  = useState(["",""]);
-  const [instagramUrls,setInstagramUrls]= useState(["",""]);
-  const [otherUrls,    setOtherUrls]    = useState([""]);
-  const [winsorApiKey, setWindsorApiKey]= useState("");
-  const [competitorNames, setCompetitorNames]= useState("");
+  const draft = (() => { try { return JSON.parse(localStorage.getItem(STEP1_DRAFT_KEY)) || {}; } catch { return {}; } })();
+  const [brandName,    setBrandName]    = useState(draft.brandName    || "");
+  const [brandUrl,     setBrandUrl]     = useState(draft.brandUrl     || "");
+  const [productUrl,   setProductUrl]   = useState(draft.productUrl   || "");
+  const [mediaKeywords,setMediaKeywords]= useState(draft.mediaKeywords|| "");
+  const [amazonUrls,   setAmazonUrls]   = useState(draft.amazonUrls   || ["","",""]);
+  const [myntraUrl,    setMyntraUrl]    = useState(draft.myntraUrl    || "");
+  const [youtubeUrls,  setYoutubeUrls]  = useState(draft.youtubeUrls  || ["",""]);
+  const [instagramUrls,setInstagramUrls]= useState(draft.instagramUrls|| ["",""]);
+  const [otherUrls,    setOtherUrls]    = useState(draft.otherUrls    || [""]);
+  const [winsorApiKey, setWindsorApiKey]= useState(draft.winsorApiKey || "");
+  const [competitorNames, setCompetitorNames]= useState(draft.competitorNames || "");
   const [creativeSheetRows, setCreativeSheetRows] = useState([]);
   const [sheetLoaded, setSheetLoaded] = useState(false);
   const [errors,       setErrors]       = useState([]);
+
+  useEffect(() => {
+    localStorage.setItem(STEP1_DRAFT_KEY, JSON.stringify({
+      brandName, brandUrl, productUrl, mediaKeywords,
+      amazonUrls, myntraUrl, youtubeUrls, instagramUrls, otherUrls,
+      winsorApiKey, competitorNames,
+    }));
+  }, [brandName, brandUrl, productUrl, mediaKeywords, amazonUrls, myntraUrl, youtubeUrls, instagramUrls, otherUrls, winsorApiKey, competitorNames]);
 
   const baseReady = brandName.trim()&&brandUrl.trim()&&productUrl.trim();
 
@@ -1206,6 +1252,11 @@ function Step2Screen({urlData, onGenerate, onBack}) {
   const hasSaved = !!getSavedBrand(urlData.brandName);
 
   useEffect(() => {
+    if (!urlData.brandName) return;
+    saveBrand(urlData.brandName, {usps, toneOfVoice, adSpend, targetRoas, winningCopies, testedAngles, killedCreatives, currentOffers, winningAdUrls});
+  }, [usps, toneOfVoice, adSpend, targetRoas, winningCopies, testedAngles, killedCreatives, currentOffers, winningAdUrls]);
+
+  useEffect(() => {
     if (saved.usps?.filter(u=>u.trim()).length > 0) return;
     setUspLoading(true);
     claudeCall(
@@ -1324,7 +1375,7 @@ function LoadingScreen({brand, progress, liveSignals, dataPoints, windsorLoaded}
           {windsorLoaded && (
             <div style={{background:"rgba(76,175,80,0.08)",border:"1px solid rgba(76,175,80,0.2)",borderRadius:"6px",padding:"8px 12px",display:"flex",alignItems:"center",gap:"8px"}}>
               <div style={{width:"6px",height:"6px",borderRadius:"50%",background:T.green,flexShrink:0}}/>
-              <span style={{fontFamily:"'DM Mono',monospace",fontSize:"10px",color:T.green}}>Windsor AI — Meta performance data loaded</span>
+              <span style={{fontFamily:"'DM Mono',monospace",fontSize:"10px",color:T.green}}>Meta performance data loaded</span>
             </div>
           )}
 
@@ -1337,7 +1388,7 @@ function LoadingScreen({brand, progress, liveSignals, dataPoints, windsorLoaded}
             {PIPELINE_STEPS.map(({key,label})=>{
               const state = progress[key]||"pending";
               return (
-                <div key={key} style={{display:"flex",alignItems:"center",gap:"10px",padding:"8px 12px",borderRadius:"5px",background:state==="running"?"rgba(200,75,47,0.08)":state==="done"?"rgba(76,175,80,0.04)":"transparent",border:"1px solid "+(state==="running"?"rgba(200,75,47,0.3)":state==="done"?"rgba(76,175,80,0.1)":"transparent"),transition:"all 0.3s"}}>
+                <div key={key} style={{display:"flex",alignItems:"center",gap:"10px",padding:"8px 12px",borderRadius:"5px",background:state==="running"?"rgba(200,75,47,0.08)":state==="done"?"rgba(76,175,80,0.04)":state==="failed"?"rgba(244,67,54,0.05)":"transparent",border:"1px solid "+(state==="running"?"rgba(200,75,47,0.3)":state==="done"?"rgba(76,175,80,0.1)":state==="failed"?"rgba(244,67,54,0.25)":"transparent"),transition:"all 0.3s"}}>
                   <div style={{width:"6px",height:"6px",borderRadius:"50%",flexShrink:0,background:state==="done"?T.green:state==="failed"?"#f44336":state==="running"?T.accent:"rgba(255,255,255,0.1)"}}/>
                   <span style={{fontFamily:"'DM Mono',monospace",fontSize:"10px",color:state==="pending"?T.muted:T.ink,flex:1,lineHeight:"1.4"}}>{label}</span>
                   <span style={{fontFamily:"'DM Mono',monospace",fontSize:"9px",color:state==="done"?T.green:state==="failed"?"rgba(244,67,54,0.7)":state==="running"?T.accent:T.muted,flexShrink:0}}>
@@ -1706,10 +1757,35 @@ const ICP_TABS = [
   {key:"scripts",    label:"Scripts"},
   {key:"kits",       label:"Creator & Designer Kits"},
   {key:"performance",label:"Performance"},
+  {key:"generate",   label:"Generate Creative ✦"},
 ];
 
-function ICPOutput({icp, brand, product}) {
+function ICPOutput({icp, brand, product, visualIntel}) {
   const [tab, setTab] = useState("strategy");
+  const [genState, setGenState] = useState("idle"); // idle | loading | done | error
+  const [genResult, setGenResult] = useState(null);
+  const [genError, setGenError] = useState("");
+
+  const handleGenerate = async () => {
+    setGenState("loading");
+    setGenError("");
+    const topPattern = visualIntel?.top_patterns?.[0] || {};
+    const usp = (icp.usp_bridge||[])[0]?.product_usp || "";
+    try {
+      const res = await fetch("/api/generate-creative", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ icp, visualPattern: topPattern, brand, product, usp }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setGenResult(data);
+      setGenState("done");
+    } catch(e) {
+      setGenError(e.message);
+      setGenState("error");
+    }
+  };
+
   if (!icp) return null;
   const p = icp.profile||{};
   const pr = icp.problem||{};
@@ -2039,6 +2115,58 @@ function ICPOutput({icp, brand, product}) {
           </Section>
         </div>
       )}
+
+      {tab==="generate"&&(
+        <div style={{display:"flex",flexDirection:"column",gap:"24px"}}>
+          <Section title="AI Creative Generation — DALL-E 3" accent>
+            <div style={{background:"rgba(200,75,47,0.04)",border:"1px solid rgba(200,75,47,0.15)",borderRadius:"8px",padding:"20px",marginBottom:"16px"}}>
+              <div style={{fontSize:"13px",color:T.muted,lineHeight:"1.7",marginBottom:"16px"}}>
+                GPT-4o synthesises the winning visual pattern from your top ROAS ads with this ICP's core problem and angle, then DALL-E 3 generates a photorealistic Indian lifestyle ad image ready to hand to your design team.
+              </div>
+              <div style={{display:"flex",gap:"12px",flexWrap:"wrap",marginBottom:"16px"}}>
+                {visualIntel?.top_patterns?.[0] && Object.entries(visualIntel.top_patterns[0]).map(([k,v])=>(
+                  <div key={k} style={{background:T.card,border:"1px solid "+T.cardBorder,borderRadius:"4px",padding:"4px 10px"}}>
+                    <span style={{fontFamily:"'DM Mono',monospace",fontSize:"9px",color:T.muted,textTransform:"uppercase"}}>{k.replace(/_/g," ")}: </span>
+                    <span style={{fontFamily:"'DM Mono',monospace",fontSize:"9px",color:T.ink}}>{v}</span>
+                  </div>
+                ))}
+                {!visualIntel?.top_patterns?.[0]&&<div style={{fontFamily:"'DM Mono',monospace",fontSize:"11px",color:T.muted}}>Upload creative sheet + Windsor key to enable visual pattern data.</div>}
+              </div>
+              {genState==="idle"&&(
+                <button onClick={handleGenerate} style={{background:T.accent,color:T.ink,border:"none",borderRadius:"6px",padding:"12px 28px",fontSize:"14px",fontWeight:"600",cursor:"pointer",fontFamily:"'DM Sans',sans-serif"}}>
+                  Generate Ad with DALL-E 3 →
+                </button>
+              )}
+              {genState==="loading"&&(
+                <div style={{display:"flex",alignItems:"center",gap:"12px",color:T.muted,fontFamily:"'DM Mono',monospace",fontSize:"12px"}}>
+                  <div style={{width:"16px",height:"16px",border:"2px solid rgba(200,75,47,0.3)",borderTop:"2px solid "+T.accent,borderRadius:"50%",animation:"spin 1s linear infinite",flexShrink:0}}/>
+                  GPT-4o writing prompt → DALL-E 3 generating image… (30–60s)
+                </div>
+              )}
+              {genState==="error"&&(
+                <div style={{display:"flex",flexDirection:"column",gap:"8px"}}>
+                  <div style={{color:"rgba(255,100,80,0.9)",fontSize:"13px"}}>✗ {genError}</div>
+                  <button onClick={handleGenerate} style={{background:"rgba(200,75,47,0.15)",color:T.accent,border:"1px solid rgba(200,75,47,0.4)",borderRadius:"6px",padding:"8px 20px",fontSize:"13px",cursor:"pointer",fontFamily:"'DM Mono',monospace",width:"fit-content"}}>Retry →</button>
+                </div>
+              )}
+            </div>
+
+            {genState==="done"&&genResult&&(
+              <div style={{display:"flex",flexDirection:"column",gap:"16px"}}>
+                <img src={genResult.imageUrl} alt="Generated ad creative" style={{width:"100%",maxWidth:"600px",borderRadius:"8px",border:"1px solid "+T.cardBorder,display:"block"}}/>
+                <div style={{display:"flex",gap:"10px"}}>
+                  <a href={genResult.imageUrl} download target="_blank" rel="noreferrer" style={{fontFamily:"'DM Mono',monospace",fontSize:"11px",padding:"6px 16px",borderRadius:"4px",cursor:"pointer",background:"rgba(76,175,80,0.1)",color:T.green,border:"1px solid rgba(76,175,80,0.3)",textDecoration:"none"}}>↓ Download Image</a>
+                  <button onClick={handleGenerate} style={{fontFamily:"'DM Mono',monospace",fontSize:"11px",padding:"6px 16px",borderRadius:"4px",cursor:"pointer",background:T.card,color:T.muted,border:"1px solid "+T.cardBorder}}>Regenerate</button>
+                </div>
+                <details style={{marginTop:"8px"}}>
+                  <summary style={{fontFamily:"'DM Mono',monospace",fontSize:"10px",color:T.muted,cursor:"pointer",letterSpacing:"0.1em"}}>VIEW DALL-E PROMPT</summary>
+                  <div style={{marginTop:"8px",background:T.card,border:"1px solid "+T.cardBorder,borderRadius:"6px",padding:"14px",fontSize:"12px",color:T.muted,lineHeight:"1.7",fontStyle:"italic"}}>{genResult.dallePrompt}</div>
+                </details>
+              </div>
+            )}
+          </Section>
+        </div>
+      )}
     </div>
   );
 }
@@ -2310,6 +2438,102 @@ function BriefOutput({data, researchData, windsorAngles, metaAdsInsights, creati
     URL.revokeObjectURL(url);
   }
 
+  function buildMarkdown() {
+    const lines = [];
+    const slug = s => s || "—";
+    const list = arr => (arr||[]).map(s=>`- ${s}`).join("\n") || "—";
+
+    lines.push(`# Creative Brief — ${slug(data.brand)} / ${slug(data.product)}`);
+    lines.push(`_Generated: ${new Date().toLocaleString()}_\n`);
+    lines.push(`## Core Problem\n${slug(data.core_problem)}\n`);
+    lines.push(`## Competitor Gap\n${slug(data.competitor_gap)}\n`);
+
+    if (data.global_ad_insights) {
+      const g = data.global_ad_insights;
+      lines.push(`## Global Ad Intelligence`);
+      if ((g.angles_to_test||[]).length) lines.push(`**Angles to Test**\n${list(g.angles_to_test)}`);
+      if ((g.angles_to_avoid||[]).length) lines.push(`**Angles to Avoid**\n${list(g.angles_to_avoid)}`);
+      lines.push("");
+    }
+
+    (data.icps||[]).forEach((icp, idx) => {
+      const p = icp.profile||{}, pr = icp.problem||{}, cr = icp.creative||{};
+      lines.push(`---\n# ICP ${idx+1} — ${slug(p.name)} [${icp.type||""}]`);
+      lines.push(`${slug(p.age_range)} · ${slug(p.city_tier)} · ${slug(p.income_bracket)}`);
+      lines.push(`**Purchase Trigger:** ${slug(p.purchase_trigger)}`);
+      lines.push(`**Purchase Blocker:** ${slug(p.purchase_blocker)}\n`);
+
+      lines.push(`## Core Problem (Consumer Language)`);
+      lines.push(`> "${slug(pr.core_problem)}"\n`);
+      lines.push(slug(pr.problem_depth));
+      lines.push(`**Emotion Before:** ${slug(pr.emotion_before_purchase)}  **Emotion After:** ${slug(pr.emotion_after_purchase)}`);
+      if ((pr.real_quotes||[]).length) lines.push(`\n**Real Quotes**\n${(pr.real_quotes).map(q=>`> "${q}"`).join("\n")}`);
+      lines.push("");
+
+      if ((icp.usp_bridge||[]).length) {
+        lines.push(`## Problem → USP Bridge`);
+        icp.usp_bridge.forEach(b => {
+          lines.push(`**Problem:** ${slug(b.consumer_problem)}  →  **USP:** ${slug(b.product_usp)}`);
+          lines.push(`_Proof:_ ${slug(b.proof_point)}  |  _Angle:_ ${slug(b.creative_angle)}\n`);
+        });
+      }
+
+      if ((icp.objection_map||[]).length) {
+        lines.push(`## Objection Map`);
+        icp.objection_map.forEach(o => lines.push(`- **${slug(o.objection)}** → ${slug(o.counter)} — _"${slug(o.ad_line)}"_`));
+        lines.push("");
+      }
+
+      if ((icp.concepts||[]).length) {
+        lines.push(`## Concept Recommendations`);
+        icp.concepts.forEach(c => lines.push(`- **${slug(c.concept)}** [${slug(c.format)}] — ${slug(c.rationale)}`));
+        lines.push("");
+      }
+
+      if ((cr.hooks||[]).length) {
+        lines.push(`## Hooks`);
+        cr.hooks.forEach((h,i) => {
+          lines.push(`**H${i+1} [${slug(h.type)}]:** "${slug(h.hook)}"`);
+          lines.push(`  _${slug(h.why_it_works)}_\n`);
+        });
+      }
+
+      if (cr.static_ad) {
+        lines.push(`## Static Ad Copy`);
+        lines.push(`**Headline:** ${slug(cr.static_ad.headline)}`);
+        lines.push(`**Body:** ${slug(cr.static_ad.body_copy)}`);
+        lines.push(`**USP Line:** ${slug(cr.static_ad.usp_line)}`);
+        lines.push(`**CTA:** ${slug(cr.static_ad.cta)}\n`);
+      }
+
+      if ((cr.body_copy_variations||[]).length) {
+        lines.push(`## Body Copy Variations`);
+        cr.body_copy_variations.forEach(v => {
+          lines.push(`**${slug(v.angle)}**\n${slug(v.copy)}\n`);
+        });
+      }
+
+      if (icp.proven_formula) {
+        const f = icp.proven_formula;
+        lines.push(`## Proven Formula (Windsor AI)`);
+        lines.push(`**Winning Angle:** ${slug(f.winning_angle)}  |  **ROAS:** ${slug(f.roas)}  |  **Format:** ${slug(f.format)}`);
+        lines.push(`**Why it works:** ${slug(f.why_it_works)}`);
+        lines.push(`**Do:** ${slug(f.do_this)}`);
+        lines.push(`**Don't:** ${slug(f.dont_do_this)}\n`);
+      }
+    });
+
+    return lines.join("\n");
+  }
+
+  const [copied, setCopied] = useState(false);
+  function copyMarkdown() {
+    navigator.clipboard.writeText(buildMarkdown()).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+
   const OUTPUT_TABS = [
     {key:"research",        label:"Research Intelligence"},
     {key:"windsor",         label:"Ad Performance"},
@@ -2323,6 +2547,7 @@ function BriefOutput({data, researchData, windsorAngles, metaAdsInsights, creati
         left={<button onClick={onReset} style={{background:"none",border:"1px solid "+T.rule,color:T.muted,padding:"8px 16px",borderRadius:"4px",cursor:"pointer",fontFamily:"'DM Mono',monospace",fontSize:"11px"}}>← New Brief</button>}
         center={<div style={{fontFamily:"'DM Mono',monospace",fontSize:"11px",color:T.muted}}>{data.brand} · {data.product}</div>}
         right={<div style={{display:"flex",alignItems:"center",gap:"10px"}}>
+          <button onClick={copyMarkdown} style={{fontFamily:"'DM Mono',monospace",fontSize:"11px",padding:"6px 16px",borderRadius:"4px",cursor:"pointer",background:"rgba(100,160,255,0.1)",color:T.blue,border:"1px solid rgba(100,160,255,0.3)",letterSpacing:"0.05em"}}>{copied ? "✓ Copied" : "⎘ Copy MD"}</button>
           <button onClick={exportJSON} style={{fontFamily:"'DM Mono',monospace",fontSize:"11px",padding:"6px 16px",borderRadius:"4px",cursor:"pointer",background:"rgba(200,75,47,0.15)",color:"#c84b2f",border:"1px solid rgba(200,75,47,0.4)",letterSpacing:"0.05em"}}>↓ Export JSON</button>
           <span style={{fontFamily:"'DM Mono',monospace",fontSize:"10px",padding:"4px 12px",borderRadius:"2px",background:"rgba(50,200,80,0.1)",color:"rgba(80,220,100,0.7)",border:"1px solid rgba(50,200,80,0.2)"}}>READY FOR DESIGN</span>
         </div>}
@@ -2364,7 +2589,7 @@ function BriefOutput({data, researchData, windsorAngles, metaAdsInsights, creati
 
         {icps.map((icp,i)=>(
           activeTab==="icp_"+i && (
-            <ICPOutput key={i} icp={icp} brand={data.brand} product={data.product}/>
+            <ICPOutput key={i} icp={icp} brand={data.brand} product={data.product} visualIntel={creativeIntel}/>
           )
         ))}
 
@@ -2415,6 +2640,17 @@ export default function App() {
   const [progress,     setProgress]     = useState(defaultProgress);
   const [liveSignals,  setLiveSignals]  = useState([]);
   const [dataPoints,   setDataPoints]   = useState({});
+  const [cachedBrief,  setCachedBrief]  = useState(() => loadLastBrief());
+
+  const restoreLastBrief = () => {
+    const c = cachedBrief;
+    setBriefData(c.brief);
+    setResearchData(c.researchIntelligence);
+    setWindsorAngles(c.windsorAngles);
+    setMetaAdsData(c.metaAdsInsights);
+    setCreativeIntel(c.creativeIntelData);
+    setScreen("output");
+  };
 
   const mark = (key,state) => setProgress(p=>({...p,[key]:state}));
 
@@ -2446,86 +2682,140 @@ export default function App() {
       const quoraTerms    = urlIntelligence.quora_search_terms||[];
       mark("extract",(urlIntelligence.problem_keywords||[]).length>0?"done":"failed");
 
-      // Windsor AI step — always calls server (key stored in Railway env var)
+      // Performance data — Blissclub dashboard first, Windsor direct as fallback
       mark("windsor","running");
       let parsedWindsor = null;
-      const windsorRaw = await fetchWindsorData();
+      let windsorRaw = await fetchBlissclubData();
       if (windsorRaw?.length > 0) {
         parsedWindsor = parseCreativeAngles(windsorRaw);
         setWindsorAngles(parsedWindsor);
         setWindsorLoaded(true);
         mark("windsor","done");
-      } else { mark("windsor","failed"); }
+      } else {
+        // Fallback: Windsor direct (requires WINDSOR_API_KEY in Railway env)
+        windsorRaw = await fetchWindsorData();
+        if (windsorRaw?.length > 0) {
+          parsedWindsor = parseCreativeAngles(windsorRaw);
+          setWindsorAngles(parsedWindsor);
+          setWindsorLoaded(true);
+          mark("windsor","done");
+        } else { mark("windsor","failed"); }
+      }
 
-      // Creative sheet × Windsor join → Vision AI tagging
-      mark("creative_intel","running");
-      let creativeIntelData = null;
-      if (allInputs.creativeSheetRows?.length > 0 && windsorRaw?.length > 0) {
-        try {
-          const joined = joinSheetWithWindsor(allInputs.creativeSheetRows, windsorRaw);
-          if (joined.length > 0) {
-            const analysed = await analyzeCreativesWithVision(joined);
-            creativeIntelData = computeVisualCorrelations(analysed, joined);
-            setCreativeIntel(creativeIntelData);
-            mark("creative_intel","done");
-          } else { mark("creative_intel","failed"); }
-        } catch(e) { console.error("Creative intel error:",e); mark("creative_intel","failed"); }
-      } else { mark("creative_intel", allInputs.creativeSheetRows?.length > 0 ? "failed" : "pending"); }
+      // All independent steps run in parallel — creative_intel, meta_ads, and all 8 scrapers
+      const _parallel = await Promise.allSettled([
+        // creative_intel
+        (async () => {
+          mark("creative_intel","running");
+          if (allInputs.creativeSheetRows?.length > 0 && windsorRaw?.length > 0) {
+            try {
+              const joined = joinSheetWithWindsor(allInputs.creativeSheetRows, windsorRaw);
+              if (joined.length > 0) {
+                const analysed = await analyzeCreativesWithVision(joined);
+                const data = computeVisualCorrelations(analysed, joined);
+                setCreativeIntel(data);
+                mark("creative_intel","done");
+                return data;
+              }
+              mark("creative_intel","failed"); return null;
+            } catch(e) { console.error("Creative intel error:",e); mark("creative_intel","failed"); return null; }
+          }
+          mark("creative_intel", allInputs.creativeSheetRows?.length > 0 ? "failed" : "pending");
+          return null;
+        })(),
+        // meta_ads
+        (async () => {
+          mark("meta_ads","running");
+          try {
+            const brandNameForMeta = urlIntelligence?.brand_name || allInputs.brandName || "";
+            const competitorNames = (allInputs.competitorNames||"").split(",").map(s=>s.trim()).filter(Boolean);
+            const raw = await scrapeMetaAdsLibrary(brandNameForMeta, competitorNames);
+            if (raw?.length > 0) {
+              const insights = parseMetaAdsInsights(raw);
+              setMetaAdsData(insights);
+              mark("meta_ads","done");
+              return insights;
+            }
+            mark("meta_ads","failed"); return null;
+          } catch(e) { console.error("Meta Ads step failed:",e); mark("meta_ads","failed"); return null; }
+        })(),
+        // amazon
+        (async () => {
+          mark("amazon","running");
+          const data = await scrapeAmazon(allInputs.amazonUrls||[]);
+          mark("amazon", data?"done":"failed");
+          if(data) addSignals(data,"amazon");
+          return data;
+        })(),
+        // flipkart
+        (async () => {
+          mark("flipkart","running");
+          const data = await scrapeFlipkart(flipkartTerms);
+          mark("flipkart", data?"done":"failed");
+          if(data) addSignals(data,"flipkart");
+          return data;
+        })(),
+        // myntra
+        (async () => {
+          mark("myntra","running");
+          const data = await scrapeMyntra(allInputs.myntraUrl);
+          mark("myntra", data?"done":"failed");
+          if(data) addSignals(data,"myntra");
+          return data;
+        })(),
+        // reddit
+        (async () => {
+          mark("reddit","running");
+          const data = await scrapeReddit(redditTerms,redditSubs);
+          mark("reddit", data?"done":"failed");
+          if(data) addSignals(data,"reddit");
+          return data;
+        })(),
+        // youtube
+        (async () => {
+          mark("youtube","running");
+          const data = await scrapeYouTube(allInputs.youtubeUrls||[]);
+          mark("youtube", data?"done":"failed");
+          if(data) addSignals(data,"youtube");
+          return data;
+        })(),
+        // tiktok
+        (async () => {
+          mark("tiktok","running");
+          const data = await scrapeTikTok(tiktokTags);
+          mark("tiktok", data?"done":"failed");
+          if(data) addSignals(data,"tiktok");
+          return data;
+        })(),
+        // instagram
+        (async () => {
+          mark("instagram","running");
+          const data = await scrapeInstagram(allInputs.instagramUrls||[],igTags);
+          mark("instagram", data?"done":"failed");
+          if(data) addSignals(data,"instagram");
+          return data;
+        })(),
+        // quora
+        (async () => {
+          mark("quora","running");
+          const data = await scrapeQuora(quoraTerms);
+          mark("quora", data?"done":"failed");
+          if(data) addSignals(data,"quora");
+          return data;
+        })(),
+      ]);
 
-      // Meta Ads Library step
-      mark("meta_ads","running");
-      let metaAdsInsights = null;
-      try {
-        const brandNameForMeta = urlIntelligence?.brand_name || allInputs.brandName || "";
-        const competitorNames = (allInputs.competitorNames||"").split(",").map(s=>s.trim()).filter(Boolean);
-        const metaAdsRaw = await scrapeMetaAdsLibrary(brandNameForMeta, competitorNames);
-        if (metaAdsRaw?.length > 0) {
-          metaAdsInsights = parseMetaAdsInsights(metaAdsRaw);
-          setMetaAdsData(metaAdsInsights);
-          mark("meta_ads","done");
-        } else { mark("meta_ads","failed"); }
-      } catch(e) { console.error("Meta Ads step failed:",e); mark("meta_ads","failed"); }
-
-      mark("amazon","running");
-      const amazonData = await scrapeAmazon(allInputs.amazonUrls||[]);
-      mark("amazon",amazonData?"done":"failed");
-      if(amazonData) addSignals(amazonData,"amazon");
-
-
-      mark("flipkart","running");
-      const flipkartData = await scrapeFlipkart(flipkartTerms);
-      mark("flipkart",flipkartData?"done":"failed");
-      if(flipkartData) addSignals(flipkartData,"flipkart");
-
-      mark("myntra","running");
-      const myntraData = await scrapeMyntra(allInputs.myntraUrl);
-      mark("myntra",myntraData?"done":"failed");
-      if(myntraData) addSignals(myntraData,"myntra");
-
-      mark("reddit","running");
-      const redditData = await scrapeReddit(redditTerms,redditSubs);
-      mark("reddit",redditData?"done":"failed");
-      if(redditData) addSignals(redditData,"reddit");
-
-      mark("youtube","running");
-      const youtubeData = await scrapeYouTube(allInputs.youtubeUrls||[]);
-      mark("youtube",youtubeData?"done":"failed");
-      if(youtubeData) addSignals(youtubeData,"youtube");
-
-      mark("tiktok","running");
-      const tiktokData = await scrapeTikTok(tiktokTags);
-      mark("tiktok",tiktokData?"done":"failed");
-      if(tiktokData) addSignals(tiktokData,"tiktok");
-
-      mark("instagram","running");
-      const instagramData = await scrapeInstagram(allInputs.instagramUrls||[],igTags);
-      mark("instagram",instagramData?"done":"failed");
-      if(instagramData) addSignals(instagramData,"instagram");
-
-      mark("quora","running");
-      const quoraData = await scrapeQuora(quoraTerms);
-      mark("quora",quoraData?"done":"failed");
-      if(quoraData) addSignals(quoraData,"quora");
+      const [_ci, _ma, _amz, _fl, _mn, _rd, _yt, _tt, _ig, _qr] = _parallel.map(r => r.status==="fulfilled" ? r.value : null);
+      const creativeIntelData = _ci;
+      const metaAdsInsights   = _ma;
+      const amazonData        = _amz;
+      const flipkartData      = _fl;
+      const myntraData        = _mn;
+      const redditData        = _rd;
+      const youtubeData       = _yt;
+      const tiktokData        = _tt;
+      const instagramData     = _ig;
+      const quoraData         = _qr;
 
       mark("video_analysis","running");
       const videoAnalysis = [];
@@ -2566,6 +2856,7 @@ export default function App() {
 
       if(!brief) throw new Error("Brief generation returned null");
       setBriefData(brief);
+      saveLastBrief({ brief, researchIntelligence, windsorAngles: parsedWindsor, metaAdsInsights, creativeIntelData });
       setScreen("output");
 
     } catch(err) {
@@ -2578,10 +2869,17 @@ export default function App() {
   return (
     <div style={{minHeight:"100vh",background:T.bg,fontFamily:"'DM Sans',sans-serif"}}>
       <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;1,400&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+      {screen==="step1"&&cachedBrief?.brief&&(
+        <div style={{position:"fixed",bottom:"24px",left:"50%",transform:"translateX(-50%)",zIndex:100,background:"rgba(20,20,18,0.96)",border:"1px solid rgba(200,75,47,0.4)",borderRadius:"8px",padding:"12px 20px",display:"flex",alignItems:"center",gap:"16px",boxShadow:"0 8px 32px rgba(0,0,0,0.6)"}}>
+          <span style={{fontFamily:"'DM Mono',monospace",fontSize:"11px",color:T.muted}}>Last brief: <span style={{color:T.ink}}>{cachedBrief.brief?.brand}</span></span>
+          <button onClick={restoreLastBrief} style={{fontFamily:"'DM Mono',monospace",fontSize:"11px",padding:"5px 14px",borderRadius:"4px",cursor:"pointer",background:"rgba(200,75,47,0.15)",color:T.accent,border:"1px solid rgba(200,75,47,0.4)"}}>Restore →</button>
+          <button onClick={()=>{clearLastBrief();setCachedBrief(null);}} style={{background:"none",border:"none",color:T.muted,cursor:"pointer",fontSize:"14px",lineHeight:1,padding:"2px"}}>✕</button>
+        </div>
+      )}
       {screen==="step1"  &&<Step1Screen onNext={data=>{setUrlData(data);setScreen("step2");}}/>}
       {screen==="step2"  &&<Step2Screen urlData={urlData} onGenerate={handleGenerate} onBack={()=>setScreen("step1")}/>}
       {screen==="loading"&&<LoadingScreen brand={urlData?.brandName} progress={progress} liveSignals={liveSignals} dataPoints={dataPoints} windsorLoaded={windsorLoaded}/>}
-      {screen==="output" &&<BriefOutput data={briefData} researchData={researchData} windsorAngles={windsorAngles} metaAdsInsights={metaAdsData} creativeIntel={creativeIntel} onReset={()=>{setBriefData(null);setResearchData(null);setCreativeIntel(null);setProgress(defaultProgress);setLiveSignals([]);setDataPoints({});setScreen("step1");}}/>}
+      {screen==="output" &&<BriefOutput data={briefData} researchData={researchData} windsorAngles={windsorAngles} metaAdsInsights={metaAdsData} creativeIntel={creativeIntel} onReset={()=>{setBriefData(null);setResearchData(null);setCreativeIntel(null);setProgress(defaultProgress);setLiveSignals([]);setDataPoints({});setScreen("step1");clearLastBrief();setCachedBrief(null);}}/>}
     </div>
   );
 }
