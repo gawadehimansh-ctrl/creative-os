@@ -1737,10 +1737,35 @@ const ICP_TABS = [
   {key:"scripts",    label:"Scripts"},
   {key:"kits",       label:"Creator & Designer Kits"},
   {key:"performance",label:"Performance"},
+  {key:"generate",   label:"Generate Creative ✦"},
 ];
 
-function ICPOutput({icp, brand, product}) {
+function ICPOutput({icp, brand, product, visualIntel}) {
   const [tab, setTab] = useState("strategy");
+  const [genState, setGenState] = useState("idle"); // idle | loading | done | error
+  const [genResult, setGenResult] = useState(null);
+  const [genError, setGenError] = useState("");
+
+  const handleGenerate = async () => {
+    setGenState("loading");
+    setGenError("");
+    const topPattern = visualIntel?.top_patterns?.[0] || {};
+    const usp = (icp.usp_bridge||[])[0]?.product_usp || "";
+    try {
+      const res = await fetch("/api/generate-creative", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ icp, visualPattern: topPattern, brand, product, usp }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setGenResult(data);
+      setGenState("done");
+    } catch(e) {
+      setGenError(e.message);
+      setGenState("error");
+    }
+  };
+
   if (!icp) return null;
   const p = icp.profile||{};
   const pr = icp.problem||{};
@@ -2067,6 +2092,58 @@ function ICPOutput({icp, brand, product}) {
                 </div>
               </Card>
             </div>
+          </Section>
+        </div>
+      )}
+
+      {tab==="generate"&&(
+        <div style={{display:"flex",flexDirection:"column",gap:"24px"}}>
+          <Section title="AI Creative Generation — DALL-E 3" accent>
+            <div style={{background:"rgba(200,75,47,0.04)",border:"1px solid rgba(200,75,47,0.15)",borderRadius:"8px",padding:"20px",marginBottom:"16px"}}>
+              <div style={{fontSize:"13px",color:T.muted,lineHeight:"1.7",marginBottom:"16px"}}>
+                GPT-4o synthesises the winning visual pattern from your top ROAS ads with this ICP's core problem and angle, then DALL-E 3 generates a photorealistic Indian lifestyle ad image ready to hand to your design team.
+              </div>
+              <div style={{display:"flex",gap:"12px",flexWrap:"wrap",marginBottom:"16px"}}>
+                {visualIntel?.top_patterns?.[0] && Object.entries(visualIntel.top_patterns[0]).map(([k,v])=>(
+                  <div key={k} style={{background:T.card,border:"1px solid "+T.cardBorder,borderRadius:"4px",padding:"4px 10px"}}>
+                    <span style={{fontFamily:"'DM Mono',monospace",fontSize:"9px",color:T.muted,textTransform:"uppercase"}}>{k.replace(/_/g," ")}: </span>
+                    <span style={{fontFamily:"'DM Mono',monospace",fontSize:"9px",color:T.ink}}>{v}</span>
+                  </div>
+                ))}
+                {!visualIntel?.top_patterns?.[0]&&<div style={{fontFamily:"'DM Mono',monospace",fontSize:"11px",color:T.muted}}>Upload creative sheet + Windsor key to enable visual pattern data.</div>}
+              </div>
+              {genState==="idle"&&(
+                <button onClick={handleGenerate} style={{background:T.accent,color:T.ink,border:"none",borderRadius:"6px",padding:"12px 28px",fontSize:"14px",fontWeight:"600",cursor:"pointer",fontFamily:"'DM Sans',sans-serif"}}>
+                  Generate Ad with DALL-E 3 →
+                </button>
+              )}
+              {genState==="loading"&&(
+                <div style={{display:"flex",alignItems:"center",gap:"12px",color:T.muted,fontFamily:"'DM Mono',monospace",fontSize:"12px"}}>
+                  <div style={{width:"16px",height:"16px",border:"2px solid rgba(200,75,47,0.3)",borderTop:"2px solid "+T.accent,borderRadius:"50%",animation:"spin 1s linear infinite",flexShrink:0}}/>
+                  GPT-4o writing prompt → DALL-E 3 generating image… (30–60s)
+                </div>
+              )}
+              {genState==="error"&&(
+                <div style={{display:"flex",flexDirection:"column",gap:"8px"}}>
+                  <div style={{color:"rgba(255,100,80,0.9)",fontSize:"13px"}}>✗ {genError}</div>
+                  <button onClick={handleGenerate} style={{background:"rgba(200,75,47,0.15)",color:T.accent,border:"1px solid rgba(200,75,47,0.4)",borderRadius:"6px",padding:"8px 20px",fontSize:"13px",cursor:"pointer",fontFamily:"'DM Mono',monospace",width:"fit-content"}}>Retry →</button>
+                </div>
+              )}
+            </div>
+
+            {genState==="done"&&genResult&&(
+              <div style={{display:"flex",flexDirection:"column",gap:"16px"}}>
+                <img src={genResult.imageUrl} alt="Generated ad creative" style={{width:"100%",maxWidth:"600px",borderRadius:"8px",border:"1px solid "+T.cardBorder,display:"block"}}/>
+                <div style={{display:"flex",gap:"10px"}}>
+                  <a href={genResult.imageUrl} download target="_blank" rel="noreferrer" style={{fontFamily:"'DM Mono',monospace",fontSize:"11px",padding:"6px 16px",borderRadius:"4px",cursor:"pointer",background:"rgba(76,175,80,0.1)",color:T.green,border:"1px solid rgba(76,175,80,0.3)",textDecoration:"none"}}>↓ Download Image</a>
+                  <button onClick={handleGenerate} style={{fontFamily:"'DM Mono',monospace",fontSize:"11px",padding:"6px 16px",borderRadius:"4px",cursor:"pointer",background:T.card,color:T.muted,border:"1px solid "+T.cardBorder}}>Regenerate</button>
+                </div>
+                <details style={{marginTop:"8px"}}>
+                  <summary style={{fontFamily:"'DM Mono',monospace",fontSize:"10px",color:T.muted,cursor:"pointer",letterSpacing:"0.1em"}}>VIEW DALL-E PROMPT</summary>
+                  <div style={{marginTop:"8px",background:T.card,border:"1px solid "+T.cardBorder,borderRadius:"6px",padding:"14px",fontSize:"12px",color:T.muted,lineHeight:"1.7",fontStyle:"italic"}}>{genResult.dallePrompt}</div>
+                </details>
+              </div>
+            )}
           </Section>
         </div>
       )}
@@ -2492,7 +2569,7 @@ function BriefOutput({data, researchData, windsorAngles, metaAdsInsights, creati
 
         {icps.map((icp,i)=>(
           activeTab==="icp_"+i && (
-            <ICPOutput key={i} icp={icp} brand={data.brand} product={data.product}/>
+            <ICPOutput key={i} icp={icp} brand={data.brand} product={data.product} visualIntel={creativeIntel}/>
           )
         ))}
 

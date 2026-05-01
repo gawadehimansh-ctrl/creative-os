@@ -201,6 +201,79 @@ app.post("/api/vision-analyze", async (req, res) => {
   res.json({ results });
 });
 
+// Blissclub dashboard connector — pulls top Meta ads by ROAS
+app.post("/api/blissclub-data", async (req, res) => {
+  const proxyUrl = process.env.BLISSCLUB_PROXY_URL || "https://blissclub-proxy-production.up.railway.app";
+  const apiKey = process.env.BLISSCLUB_API_KEY;
+  const { datePreset = "last_30dT" } = req.body || {};
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (apiKey) headers["x-api-key"] = apiKey;
+    const r = await fetch(`${proxyUrl}/api/meta/daily?date_preset=${datePreset}`, { headers, redirect: "follow" });
+    if (!r.ok) throw new Error("Blissclub proxy HTTP " + r.status);
+    const raw = await r.json();
+    const rows = (Array.isArray(raw) ? raw : raw?.data || [])
+      .sort((a, b) => (b.action_values_purchase || 0) - (a.action_values_purchase || 0))
+      .slice(0, 20);
+    res.json({ rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Creative generation — GPT-4o writes a precise prompt → DALL-E 3 generates ad image
+app.post("/api/generate-creative", async (req, res) => {
+  const { icp, visualPattern, brand, product, usp } = req.body || {};
+  const openaiKey = process.env.OPENAI_API_KEY;
+  if (!openaiKey) return res.status(400).json({ error: "No OpenAI key configured" });
+
+  try {
+    const p = icp?.profile || {};
+    const pr = icp?.problem || {};
+    const cr = icp?.creative || {};
+    const hook = cr?.hooks?.[0]?.hook || "";
+
+    // Step 1: GPT-4o writes the DALL-E 3 prompt
+    const promptRes = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + openaiKey },
+      body: JSON.stringify({
+        model: "gpt-4o",
+        max_tokens: 500,
+        messages: [
+          { role: "system", content: "You are a performance creative director for Indian D2C brands. Write precise DALL-E 3 image generation prompts for high-converting Meta/Instagram ad creatives. Return ONLY the image prompt, nothing else." },
+          { role: "user", content: `Write a DALL-E 3 prompt for a ${brand} ad targeting this ICP:
+
+ICP: ${p.name || "Indian woman"}, ${p.age_range || "25-35"}, ${p.city_tier || "Tier 1"}, ${p.income_bracket || "mid-premium"}
+Core problem: "${pr.core_problem || ""}"
+Emotion before purchase: ${pr.emotion_before_purchase || ""}
+Winning visual pattern from top ROAS ads: format=${visualPattern?.format || "static"}, hook=${visualPattern?.hook_type || "benefit_first"}, composition=${visualPattern?.composition || "close_up"}, colors=${visualPattern?.color_palette || "bright_vibrant"}, background=${visualPattern?.background || "studio"}, person=${visualPattern?.person_type || "lifestyle"}
+Product: ${product}
+Key USP: ${usp || ""}
+Ad hook: "${hook}"
+
+Rules: photorealistic Indian lifestyle photography, high-production quality, no text in image, authentic to the ICP's world (${p.city_tier || "metro India"}). Max 300 words.` }
+        ]
+      })
+    });
+    const promptData = await promptRes.json();
+    if (promptData.error) throw new Error("GPT-4o: " + promptData.error.message);
+    const dallePrompt = promptData.choices?.[0]?.message?.content?.trim() || "";
+
+    // Step 2: DALL-E 3 generates the image
+    const imageRes = await fetch("https://api.openai.com/v1/images/generations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + openaiKey },
+      body: JSON.stringify({ model: "dall-e-3", prompt: dallePrompt, n: 1, size: "1024x1024", quality: "standard", style: "natural" })
+    });
+    const imageData = await imageRes.json();
+    if (imageData.error) throw new Error("DALL-E 3: " + imageData.error.message);
+    res.json({ imageUrl: imageData.data?.[0]?.url, dallePrompt, revisedPrompt: imageData.data?.[0]?.revised_prompt });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // All other routes serve the frontend
 app.get("*", (req, res) => {
   res.sendFile(join(__dirname, "dist", "index.html"));
