@@ -264,7 +264,7 @@ Rules: photorealistic Indian lifestyle photography, high-production quality, no 
     const imageRes = await fetch("https://api.openai.com/v1/images/generations", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": "Bearer " + openaiKey },
-      body: JSON.stringify({ model: "dall-e-3", prompt: dallePrompt, n: 1, size: "1024x1024", quality: "standard", style: "natural" })
+      body: JSON.stringify({ model: "gpt-image-2", prompt: dallePrompt, n: 1, size: "1024x1024", quality: "standard" })
     });
     const imageData = await imageRes.json();
     if (imageData.error) throw new Error("DALL-E 3: " + imageData.error.message);
