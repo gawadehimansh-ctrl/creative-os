@@ -271,27 +271,29 @@ function joinSheetWithWindsor(sheetRows, windsorRows) {
 }
 
 async function analyzeCreativesWithVision(topRows) {
-  const results = [];
-  for (const row of topRows.slice(0, 10)) {
-    if (!row.creativeLink) continue;
-    try {
-      const imgRes = await fetch("/api/drive-image", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ driveUrl: row.creativeLink }),
-      });
-      if (!imgRes.ok) continue;
-      const { base64, mediaType, fileId } = await imgRes.json();
-      if (!base64) continue;
-      const tagRes = await fetch("/api/vision-tag", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ base64, mediaType, adName: row.adName, product: row.product, contentType: row.contentType }),
-      });
-      if (!tagRes.ok) continue;
-      const { tags } = await tagRes.json();
-      results.push({ ...row, visualTags: tags || {}, thumbUrl: `https://drive.google.com/thumbnail?id=${fileId}&sz=w400` });
-    } catch(e) { console.error("[Vision] failed for", row.adName, e.message); }
+  const candidates = topRows.slice(0, 10).filter(r => r.creativeLink);
+  if (!candidates.length) return [];
+  try {
+    const res = await fetch("/api/vision-analyze", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        images: candidates.map(r => ({ adName: r.adName, imageUrl: r.creativeLink })),
+      }),
+    });
+    if (!res.ok) return [];
+    const { results } = await res.json();
+    const byAdName = new Map((results || []).map(r => [r.adName, r]));
+    return candidates
+      .map(row => {
+        const tagged = byAdName.get(row.adName);
+        if (!tagged) return null;
+        return { ...row, visualTags: tagged.visualTags || {}, thumbUrl: tagged.thumbUrl };
+      })
+      .filter(Boolean);
+  } catch (e) {
+    console.error("[Vision] failed:", e.message);
+    return [];
   }
-  return results;
 }
 
 function computeVisualCorrelations(analysedRows, allJoinedRows) {
