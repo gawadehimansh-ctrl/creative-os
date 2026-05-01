@@ -92,62 +92,6 @@ app.post("/api/windsor", async (req, res) => {
   }
 });
 
-// Google Drive image proxy — fetches thumbnail as base64 to avoid CORS
-app.post("/api/drive-image", async (req, res) => {
-  const { driveUrl } = req.body;
-  if (!driveUrl) return res.status(400).json({ error: "No URL" });
-  let fileId = null;
-  for (const pat of [/\/file\/d\/([a-zA-Z0-9_-]+)/, /[?&]id=([a-zA-Z0-9_-]+)/, /\/d\/([a-zA-Z0-9_-]+)/]) {
-    const m = String(driveUrl).match(pat);
-    if (m) { fileId = m[1]; break; }
-  }
-  if (!fileId) return res.status(400).json({ error: "Cannot extract Drive file ID" });
-  const thumbUrl = `https://drive.google.com/thumbnail?id=${fileId}&sz=w800`;
-  try {
-    const r = await fetch(thumbUrl, { headers: { "User-Agent": "Mozilla/5.0" }, redirect: "follow" });
-    if (!r.ok) throw new Error("Drive HTTP " + r.status);
-    const buf = await r.arrayBuffer();
-    const base64 = Buffer.from(buf).toString("base64");
-    const mediaType = (r.headers.get("content-type") || "image/jpeg").split(";")[0];
-    res.json({ base64, mediaType, fileId });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Claude Vision creative tagger — uses Haiku for speed/cost
-app.post("/api/vision-tag", async (req, res) => {
-  const { base64, mediaType, adName, product, contentType } = req.body;
-  const apiKey = process.env.ANTHROPIC_API_KEY || process.env.VITE_ANTHROPIC_KEY;
-  if (!apiKey) return res.status(400).json({ error: "No Anthropic key" });
-  if (!base64) return res.status(400).json({ error: "No image" });
-  try {
-    const r = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 300,
-        system: "You are a creative analyst. Analyze the ad image and return ONLY a valid JSON object — no explanation, no markdown.",
-        messages: [{
-          role: "user",
-          content: [
-            { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
-            { type: "text", text: `Ad: ${adName}\nProduct: ${product}\nType: ${contentType}\n\nReturn JSON with exactly these keys:\n{"format":"video|static|carousel|ugc_video|reel","person_type":"influencer|model|athlete|no_person|lifestyle|ugc_creator","text_style":"bold_headline|minimal|price_offer|no_text|testimonial|story_format","background":"studio|outdoor|home_lifestyle|plain_white|gym|product_flat_lay","hook_type":"problem_agitate|benefit_first|social_proof|urgency_offer|curiosity|transformation|tutorial","color_palette":"dark_moody|bright_vibrant|pastel_soft|monochrome|brand_colors|earth_tones","composition":"close_up|full_body|product_only|split_screen|before_after|group_shot"}` }
-          ]
-        }]
-      })
-    });
-    const d = await r.json();
-    const text = d?.content?.[0]?.text || "{}";
-    let tags = {};
-    try { tags = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] || "{}"); } catch {}
-    res.json({ tags });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // Helper: extract a Google Drive file ID from a URL, or null if not a Drive URL
 function extractDriveFileId(url) {
   for (const pat of [/\/file\/d\/([a-zA-Z0-9_-]+)/, /[?&]id=([a-zA-Z0-9_-]+)/, /\/d\/([a-zA-Z0-9_-]+)/]) {
