@@ -298,7 +298,7 @@ function computeVisualCorrelations(analysedRows, allJoinedRows) {
   if (!analysedRows?.length) return null;
   const avgRoasAll = allJoinedRows.length
     ? allJoinedRows.reduce((s,r) => s+r.roas, 0) / allJoinedRows.length : 0;
-  const dims = ["person_type","text_style","background","hook_type","color_theme","composition"];
+  const dims = ["format","person_type","text_style","background","hook_type","color_palette","composition"];
   const correlations = {};
   for (const dim of dims) {
     const byTag = {};
@@ -867,6 +867,27 @@ EACH ICP OBJECT:
 "Use these whitespace angles as the creative foundation for ICP briefs. Each ICP should own one of the top whitespace angles."
 ) : "";
 
+  const visualIntelContext = inputs.creativeIntelData ? (
+"VISUAL INTELLIGENCE — VISION AI ANALYSIS OF TOP ADS BY ROAS:\n" +
+"Creatives vision-tagged: "+inputs.creativeIntelData.total_analysed+" | Overall avg ROAS: "+inputs.creativeIntelData.avg_roas_all+"x\n\n" +
+"VISUAL PATTERNS RANKED BY ROAS LIFT:\n" +
+Object.entries(inputs.creativeIntelData.correlations||{}).map(([dim,rows])=>{
+  const top3 = (rows||[]).slice(0,3).map(r=>r.tag.replace(/_/g," ")+" ("+r.avg_roas+"x, "+(r.lift>=0?"+":"")+r.lift+"% vs avg)").join(" · ");
+  return "  "+dim.replace(/_/g," ").toUpperCase()+": "+top3;
+}).join("\n") + "\n\n" +
+"TOP CREATIVES (VISION-TAGGED):\n" +
+(inputs.creativeIntelData.top_creatives||[]).slice(0,5).map((c,i)=>{
+  const tags = Object.entries(c.visualTags||{}).map(([k,v])=>k.replace(/_/g," ")+": "+v.replace(/_/g," ")).join(", ");
+  return (i+1)+". "+c.adName.slice(0,70)+" — "+c.roas+"x ROAS | "+tags;
+}).join("\n") + "\n\n" +
+"APPLY VISUAL INTELLIGENCE TO EACH ICP:\n" +
+"- designer_brief.visual_style → use highest-ROAS background and composition\n" +
+"- designer_brief.colour_direction → use highest-ROAS color_palette values\n" +
+"- ugc_creator_brief.vibe and outfit_props → mirror highest-ROAS person_type\n" +
+"- concepts[].format → prioritise formats with highest lift\n" +
+"- video_script hook_type → use the hook_type with highest ROAS lift\n"
+) : "";
+
   const userPrompt = `BRAND: ${inputs.urlIntelligence.brand_name||""}
 PRODUCT: ${inputs.urlIntelligence.product_name||""}
 CORE PROBLEM SOLVED: ${inputs.urlIntelligence.core_problem_solved||""}
@@ -889,7 +910,7 @@ BRAND CONTEXT:
 ${windsorContext}
 ${metaAdsContext}
 ${researchContext}
-
+${visualIntelContext}
 SCRAPED DATA FROM 9 SOURCES:
 ${reviewData||"No review data scraped — generate from URL intelligence only."}
 
@@ -2158,8 +2179,8 @@ function WindsorPanel({data}) {
 // ─── CREATIVE INTEL PANEL ─────────────────────────────────────
 
 const DIM_LABELS = {
-  person_type: "Person Type", text_style: "Text Style", background: "Background",
-  hook_type: "Hook Type", color_theme: "Color Theme", composition: "Composition",
+  format: "Format", person_type: "Person Type", text_style: "Text Style", background: "Background",
+  hook_type: "Hook Type", color_palette: "Color Palette", composition: "Composition",
 };
 
 function CreativeIntelPanel({ data }) {
@@ -2275,6 +2296,7 @@ function BriefOutput({data, researchData, windsorAngles, metaAdsInsights, creati
       research: researchData,
       windsor_performance: windsorAngles || null,
       meta_ads_insights: metaAdsInsights || null,
+      visual_intelligence: creativeIntel || null,
       exported_at: new Date().toISOString(),
     };
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
@@ -2536,6 +2558,7 @@ export default function App() {
         researchIntelligence,
         windsorAngles: parsedWindsor,
         metaAdsInsights,
+        creativeIntelData,
       });
       mark("brief",brief?"done":"failed");
 

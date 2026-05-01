@@ -133,7 +133,7 @@ app.post("/api/vision-tag", async (req, res) => {
           role: "user",
           content: [
             { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
-            { type: "text", text: `Ad: ${adName}\nProduct: ${product}\nType: ${contentType}\n\nReturn JSON with exactly these keys:\n{"person_type":"influencer|model|athlete|no_person|lifestyle|ugc_creator","text_style":"bold_headline|minimal|price_offer|no_text|testimonial|story_format","background":"studio|outdoor|home_lifestyle|plain_white|gym|product_flat_lay","hook_type":"problem_agitate|benefit_first|social_proof|urgency_offer|curiosity|transformation|tutorial","color_theme":"dark|bright|pastel|monochrome|brand_colors","composition":"close_up|full_body|product_only|split_screen|before_after|group_shot"}` }
+            { type: "text", text: `Ad: ${adName}\nProduct: ${product}\nType: ${contentType}\n\nReturn JSON with exactly these keys:\n{"format":"video|static|carousel|ugc_video|reel","person_type":"influencer|model|athlete|no_person|lifestyle|ugc_creator","text_style":"bold_headline|minimal|price_offer|no_text|testimonial|story_format","background":"studio|outdoor|home_lifestyle|plain_white|gym|product_flat_lay","hook_type":"problem_agitate|benefit_first|social_proof|urgency_offer|curiosity|transformation|tutorial","color_palette":"dark_moody|bright_vibrant|pastel_soft|monochrome|brand_colors|earth_tones","composition":"close_up|full_body|product_only|split_screen|before_after|group_shot"}` }
           ]
         }]
       })
