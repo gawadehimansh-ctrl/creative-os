@@ -29,10 +29,13 @@ app.post("/api/claude", async (req, res) => {
   }
 });
 
-// Apify proxy
+// Apify proxy — injects token server-side so it never reaches the browser
 app.post("/api/apify", async (req, res) => {
   let { url, method = "GET", body } = req.body;
   if (!url) return res.status(400).json({ error: "No URL" });
+
+  const apifyToken = process.env.APIFY_TOKEN || process.env.VITE_APIFY_TOKEN;
+  if (apifyToken) url += (url.includes("?") ? "&" : "?") + "token=" + apifyToken;
 
   // Fix actor ID format: replace / with ~ between username and actor slug
   const actsIndex = url.indexOf("/v2/acts/");
@@ -62,6 +65,42 @@ app.post("/api/apify", async (req, res) => {
     res.json(data);
   } catch (err) {
     console.error("[Apify] Error: " + err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// AssemblyAI proxy
+app.post("/api/assemblyai", async (req, res) => {
+  const { path, method = "GET", body } = req.body;
+  const apiKey = process.env.ASSEMBLYAI_KEY || process.env.VITE_ASSEMBLYAI_KEY;
+  if (!apiKey) return res.status(400).json({ error: "No AssemblyAI key" });
+  if (!path) return res.status(400).json({ error: "No path" });
+  try {
+    const r = await fetch("https://api.assemblyai.com" + path, {
+      method,
+      headers: { "Authorization": apiKey, "Content-Type": "application/json" },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    res.json(await r.json());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Shotstack proxy
+app.post("/api/shotstack", async (req, res) => {
+  const { path, method = "POST", body } = req.body;
+  const apiKey = process.env.SHOTSTACK_KEY || process.env.VITE_SHOTSTACK_KEY;
+  if (!apiKey) return res.status(400).json({ error: "No Shotstack key" });
+  if (!path) return res.status(400).json({ error: "No path" });
+  try {
+    const r = await fetch("https://api.shotstack.io" + path, {
+      method,
+      headers: { "x-api-key": apiKey, "Content-Type": "application/json" },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    res.json(await r.json());
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });

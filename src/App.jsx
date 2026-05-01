@@ -1,11 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 
-const CONFIG = {
-  APIFY_TOKEN:    import.meta.env.VITE_APIFY_TOKEN,
-  ANTHROPIC_KEY:  import.meta.env.VITE_ANTHROPIC_KEY,
-  ASSEMBLYAI_KEY: import.meta.env.VITE_ASSEMBLYAI_KEY,
-  SHOTSTACK_KEY:  import.meta.env.VITE_SHOTSTACK_KEY,
-};
+const CONFIG = {};
 
 const LIMITS = { amazon:30, flipkart:25, myntra:20, youtube:25, tiktok:20, instagram:20, reddit:20, quora:15 };
 
@@ -23,7 +18,7 @@ const PIPELINE_STEPS = [
   { key:"instagram",      label:"Scraping Instagram comments" },
   { key:"quora",          label:"Scraping Quora discussions (auto)" },
   { key:"video_analysis",  label:"Analysing winning ad videos" },
-  { key:"creative_intel",  label:"Creative sheet × Windsor join — Vision AI tagging top 10" },
+  { key:"creative_intel",  label:"Creative sheet × Windsor join — Vision AI tagging top 3" },
   { key:"research",        label:"Building Research Intelligence — pain clusters & whitespace" },
   { key:"brief",           label:"Generating deep ICP briefs" },
 ];
@@ -271,7 +266,7 @@ function joinSheetWithWindsor(sheetRows, windsorRows) {
 }
 
 async function analyzeCreativesWithVision(topRows) {
-  const candidates = topRows.slice(0, 10).filter(r => r.creativeLink);
+  const candidates = topRows.slice(0, 3).filter(r => r.creativeLink);
   if (!candidates.length) return [];
   try {
     const res = await fetch("/api/vision-analyze", {
@@ -364,18 +359,18 @@ async function apifyProxy(url, method="GET", body=null) {
 }
 
 async function runApifyActor(actorId, input) {
-  const startJson = await apifyProxy("https://api.apify.com/v2/acts/"+actorId+"/runs?token="+CONFIG.APIFY_TOKEN,"POST",input);
+  const startJson = await apifyProxy("https://api.apify.com/v2/acts/"+actorId+"/runs","POST",input);
   const runId = startJson?.data?.id;
   if (!runId) throw new Error("Actor start failed: "+actorId);
   let status="RUNNING", attempts=0;
   while(["RUNNING","READY","ABORTING"].includes(status) && attempts<60) {
     await new Promise(r=>setTimeout(r,4000));
-    const poll = await apifyProxy("https://api.apify.com/v2/actor-runs/"+runId+"?token="+CONFIG.APIFY_TOKEN);
+    const poll = await apifyProxy("https://api.apify.com/v2/actor-runs/"+runId);
     status=poll?.data?.status; attempts++;
   }
-  const runInfo = await apifyProxy("https://api.apify.com/v2/actor-runs/"+runId+"?token="+CONFIG.APIFY_TOKEN);
+  const runInfo = await apifyProxy("https://api.apify.com/v2/actor-runs/"+runId);
   const datasetId = runInfo?.data?.defaultDatasetId;
-  return await apifyProxy("https://api.apify.com/v2/datasets/"+datasetId+"/items?token="+CONFIG.APIFY_TOKEN+"&limit=150");
+  return await apifyProxy("https://api.apify.com/v2/datasets/"+datasetId+"/items?limit=150");
 }
 
 // ─── SCRAPERS ────────────────────────────────────────────────
@@ -658,14 +653,29 @@ function detectSentiment(text) {
 
 // ─── VIDEO ───────────────────────────────────────────────────
 
+async function assemblyaiProxy(path, method="GET", body=null) {
+  const res = await fetch("/api/assemblyai", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({path, method, body}),
+  });
+  return await res.json();
+}
+
+async function shotstackProxy(path, method="POST", body=null) {
+  const res = await fetch("/api/shotstack", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({path, method, body}),
+  });
+  return await res.json();
+}
+
 async function transcribeVideo(videoUrl) {
   try {
-    const submit = await fetch("https://api.assemblyai.com/v2/transcript",{method:"POST",headers:{"Authorization":CONFIG.ASSEMBLYAI_KEY,"Content-Type":"application/json"},body:JSON.stringify({audio_url:videoUrl,language_code:"en"})});
-    const {id} = await submit.json();
+    const {id} = await assemblyaiProxy("/v2/transcript","POST",{audio_url:videoUrl,language_code:"en"});
     let status="processing", transcript="", attempts=0;
     while(["processing","queued"].includes(status) && attempts<30) {
       await new Promise(r=>setTimeout(r,5000));
-      const poll = await (await fetch("https://api.assemblyai.com/v2/transcript/"+id,{headers:{"Authorization":CONFIG.ASSEMBLYAI_KEY}})).json();
+      const poll = await assemblyaiProxy("/v2/transcript/"+id);
       status=poll.status;
       if(status==="completed") transcript=poll.text;
       attempts++;
@@ -676,20 +686,20 @@ async function transcribeVideo(videoUrl) {
 
 async function extractFrames(videoUrl) {
   try {
-    const probeRes = await fetch("https://api.shotstack.io/v1/serve/probe",{method:"POST",headers:{"x-api-key":CONFIG.SHOTSTACK_KEY,"Content-Type":"application/json"},body:JSON.stringify({url:videoUrl})});
-    const duration = (await probeRes.json())?.response?.metadata?.duration || 20;
+    const probeData = await shotstackProxy("/v1/serve/probe","POST",{url:videoUrl});
+    const duration = probeData?.response?.metadata?.duration || 20;
     const timestamps = [];
     for(let t=0; t<Math.min(duration,30); t+=5) timestamps.push(t);
     const frameUrls = [];
     for(const time of timestamps.slice(0,6)) {
       try {
-        const renderRes = await fetch("https://api.shotstack.io/v1/render",{method:"POST",headers:{"x-api-key":CONFIG.SHOTSTACK_KEY,"Content-Type":"application/json"},body:JSON.stringify({timeline:{tracks:[{clips:[{asset:{type:"video",src:videoUrl,trim:time},start:0,length:0.1}]}]},output:{format:"jpg",fps:1,size:{width:1280,height:720}}})});
-        const renderId = (await renderRes.json())?.response?.id;
+        const renderData = await shotstackProxy("/v1/render","POST",{timeline:{tracks:[{clips:[{asset:{type:"video",src:videoUrl,trim:time},start:0,length:0.1}]}]},output:{format:"jpg",fps:1,size:{width:1280,height:720}}});
+        const renderId = renderData?.response?.id;
         if(!renderId) continue;
         let renderStatus="queued", renderAttempts=0;
         while(renderStatus!=="done" && renderAttempts<15) {
           await new Promise(r=>setTimeout(r,3000));
-          const checkData = await (await fetch("https://api.shotstack.io/v1/render/"+renderId,{headers:{"x-api-key":CONFIG.SHOTSTACK_KEY}})).json();
+          const checkData = await shotstackProxy("/v1/render/"+renderId,"GET");
           renderStatus=checkData?.response?.status;
           if(renderStatus==="done") frameUrls.push(checkData?.response?.url);
           renderAttempts++;
@@ -1337,7 +1347,7 @@ function LoadingScreen({brand, progress, liveSignals, dataPoints, windsorLoaded}
             {PIPELINE_STEPS.map(({key,label})=>{
               const state = progress[key]||"pending";
               return (
-                <div key={key} style={{display:"flex",alignItems:"center",gap:"10px",padding:"8px 12px",borderRadius:"5px",background:state==="running"?"rgba(200,75,47,0.08)":state==="done"?"rgba(76,175,80,0.04)":"transparent",border:"1px solid "+(state==="running"?"rgba(200,75,47,0.3)":state==="done"?"rgba(76,175,80,0.1)":"transparent"),transition:"all 0.3s"}}>
+                <div key={key} style={{display:"flex",alignItems:"center",gap:"10px",padding:"8px 12px",borderRadius:"5px",background:state==="running"?"rgba(200,75,47,0.08)":state==="done"?"rgba(76,175,80,0.04)":state==="failed"?"rgba(244,67,54,0.05)":"transparent",border:"1px solid "+(state==="running"?"rgba(200,75,47,0.3)":state==="done"?"rgba(76,175,80,0.1)":state==="failed"?"rgba(244,67,54,0.25)":"transparent"),transition:"all 0.3s"}}>
                   <div style={{width:"6px",height:"6px",borderRadius:"50%",flexShrink:0,background:state==="done"?T.green:state==="failed"?"#f44336":state==="running"?T.accent:"rgba(255,255,255,0.1)"}}/>
                   <span style={{fontFamily:"'DM Mono',monospace",fontSize:"10px",color:state==="pending"?T.muted:T.ink,flex:1,lineHeight:"1.4"}}>{label}</span>
                   <span style={{fontFamily:"'DM Mono',monospace",fontSize:"9px",color:state==="done"?T.green:state==="failed"?"rgba(244,67,54,0.7)":state==="running"?T.accent:T.muted,flexShrink:0}}>
