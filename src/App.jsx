@@ -925,8 +925,9 @@ INSTRUCTIONS:
 5. Video script must be verbatim.
 6. Each ICP must own one of the whitespace angles from Research Intelligence.`;
 
-  const raw = await claudeCall(system, userPrompt, 10000);
+  const raw = await claudeCall(system, userPrompt, 8000);
   const parsed = parseJSON(raw);
+  if (!parsed && raw) console.error("[generateFullBrief] JSON parse failed. Raw length:", raw.length, "Preview:", raw.slice(0, 200));
   if(parsed) {
     parsed.brand = inputs.urlIntelligence.brand_name||"";
     parsed.product = inputs.urlIntelligence.product_name||"";
