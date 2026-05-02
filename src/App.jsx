@@ -58,9 +58,10 @@ async function claudeCall(system, userContent, maxTokens=2000) {
   try {
     const res = await fetch("/api/claude", {
       method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:maxTokens,system,messages:[{role:"user",content:userContent}]}),
+      body: JSON.stringify({model:"claude-sonnet-4-6",max_tokens:maxTokens,system,messages:[{role:"user",content:userContent}]}),
     });
     const data = JSON.parse(await res.text());
+    if (data.type === "error") { console.error("claudeCall API error:", data.error?.message); return ""; }
     return data.content?.find(b=>b.type==="text")?.text || "";
   } catch(e) { console.error("claudeCall failed:",e); return ""; }
 }
@@ -77,7 +78,7 @@ async function claudeVisionCall(system, textContent, imageUrls, maxTokens=2000) 
   }
   const res = await fetch("/api/claude", {
     method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:maxTokens,system,messages:[{role:"user",content}]}),
+    body: JSON.stringify({model:"claude-sonnet-4-6",max_tokens:maxTokens,system,messages:[{role:"user",content}]}),
   });
   const data = await res.json();
   return data.content?.find(b=>b.type==="text")?.text || "";
@@ -720,7 +721,7 @@ async function analyseScreenshots(screenshots) {
         {type:"image",source:{type:"base64",media_type:screenshot.type||"image/jpeg",data:base64}},
         {type:"text",text:`Analyse this winning ad. Return pure JSON only: {"headline":string,"visual_hook":string,"angle":string,"format":string,"text_overlays":[strings],"cta":string,"why_it_works":string}`}
       ];
-      const res = await fetch("/api/claude",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,messages:[{role:"user",content}]})});
+      const res = await fetch("/api/claude",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1000,messages:[{role:"user",content}]})});
       const data = await res.json();
       const parsed = parseJSON(data.content?.find(b=>b.type==="text")?.text||"");
       if(parsed) results.push(parsed);

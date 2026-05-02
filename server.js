@@ -12,12 +12,14 @@ app.use(express.static(join(__dirname, "dist")));
 
 // Claude proxy
 app.post("/api/claude", async (req, res) => {
+  const apiKey = process.env.ANTHROPIC_API_KEY || process.env.VITE_ANTHROPIC_KEY;
+  if (!apiKey) return res.status(400).json({ type: "error", error: { message: "No Anthropic API key configured" } });
   try {
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": process.env.VITE_ANTHROPIC_KEY,
+        "x-api-key": apiKey,
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify(req.body),
