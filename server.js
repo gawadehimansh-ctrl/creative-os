@@ -7,8 +7,17 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.use(express.json({ limit: "10mb" }));
 
-// Serve frontend
-app.use(express.static(join(__dirname, "dist")));
+// Serve frontend — hashed assets get long cache; index.html must not be cached
+// so deploys are picked up immediately by returning users
+app.use(express.static(join(__dirname, "dist"), {
+  setHeaders: (res, path) => {
+    if (path.endsWith("index.html")) {
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    } else if (/\.(js|css|png|jpg|svg|woff2?)$/.test(path)) {
+      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    }
+  },
+}));
 
 // Claude proxy
 app.post("/api/claude", async (req, res) => {
@@ -215,6 +224,7 @@ app.post("/api/vision-analyze", async (req, res) => {
 
 // All other routes serve the frontend
 app.get("*", (req, res) => {
+  res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   res.sendFile(join(__dirname, "dist", "index.html"));
 });
 
