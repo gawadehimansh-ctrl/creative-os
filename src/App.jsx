@@ -55,15 +55,21 @@ function validateUrls(data) {
 // ─── CLAUDE ──────────────────────────────────────────────────
 
 async function claudeCall(system, userContent, maxTokens=2000) {
+  const tag = `[claudeCall maxTokens=${maxTokens}]`;
   try {
     const res = await fetch("/api/claude", {
       method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({model:"claude-sonnet-4-6",max_tokens:maxTokens,system,messages:[{role:"user",content:userContent}]}),
     });
-    const data = JSON.parse(await res.text());
-    if (data.type === "error") { console.error("claudeCall API error:", data.error?.message); return ""; }
-    return data.content?.find(b=>b.type==="text")?.text || "";
-  } catch(e) { console.error("claudeCall failed:",e); return ""; }
+    const rawText = await res.text();
+    console.log(tag, "HTTP", res.status, "bodyPreview:", rawText.slice(0, 300));
+    let data;
+    try { data = JSON.parse(rawText); } catch (e) { console.error(tag, "Non-JSON response:", rawText.slice(0, 500)); return ""; }
+    if (data.type === "error") { console.error(tag, "API error:", data.error?.message, data.error); return ""; }
+    const text = data.content?.find(b=>b.type==="text")?.text || "";
+    if (!text) console.error(tag, "Empty text response. Full data:", data);
+    return text;
+  } catch(e) { console.error(tag, "fetch threw:", e); return ""; }
 }
 
 async function claudeVisionCall(system, textContent, imageUrls, maxTokens=2000) {
